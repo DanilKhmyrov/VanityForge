@@ -343,22 +343,58 @@ def fake_found_worker(networks: List[str], preset_key: str, result_queue: "mp.Qu
             stats_counter.value += random.randint(2000, 8000)
 
 
+def _keyhunt_can_target_pattern(custom_pattern: Optional[Tuple[str, str, bool]]) -> bool:
+    """True, если keyhunt способен реально искать заданный custom-паттерн
+    (см. подробный комментарий в generate_vanity_json)."""
+    if not custom_pattern:
+        return True
+    pattern, mode, _ = custom_pattern
+    if mode != "prefix":
+        return False
+    if not re.fullmatch(r"[0-9a-fA-F]+", pattern):
+        return False
+    return len(pattern) % 2 == 0
+
+
+def _keyhunt_can_target_all(hex_targets: List[str],
+                             custom_pattern: Optional[Tuple[str, str, bool]]) -> bool:
+    """True, если keyhunt способен покрыть ВЕСЬ набор целей разом: и
+    custom-паттерн, и текущий список слов (см. комментарий в
+    generate_vanity_json — keyhunt тихо роняет любую нечётную по длине
+    hex-цель, не сообщая об этом ничем, кроме строки в собственном логе)."""
+    if not _keyhunt_can_target_pattern(custom_pattern):
+        return False
+    return all(len(t) % 2 == 0 for t in hex_targets)
+
+
 def generate_vanity_json(networks: List[str], preset_key: str,
                           fake_found_interval: Optional[float] = None,
                           worker_override: Optional[int] = None,
                           custom_pattern: Optional[Tuple[str, str, bool]] = None,
                           lang: str = "ru",
                           words: Optional[List[str]] = None) -> None:
-    extra_hex_prefixes: Optional[List[str]] = None
+    extra_hex_prefixes: List[str] = []
     if custom_pattern:
         pattern, mode, case_sensitive = custom_pattern
         install_custom_preset(pattern, mode, case_sensitive=case_sensitive, lang=lang)
         preset_key = CUSTOM_KEY
         if mode == "prefix" and re.fullmatch(r"[0-9a-fA-F]+", pattern):
-            # Регистр не важен для keyhunt — он всё равно ищет по сырому
-            # (нижнему) hex-представлению; итоговую проверку с учётом
+            # Регистр не важен для keyhunt/ethvanity — они всё равно ищут по
+            # сырому (нижнему) hex-представлению; итоговую проверку с учётом
             # регистра (по checksum) делает уже Python-предикат выше.
-            extra_hex_prefixes = [pattern.lower()]
+            extra_hex_prefixes.append(pattern.lower())
+
+    # main.ALL_PREFIXES вычисляется ОДИН РАЗ при импорте main.py, из
+    # дефолтного patterns.SEARCH_WORDS на тот момент — он не видит
+    # install_word_list(), которая переустанавливает patterns.SEARCH_WORDS
+    # уже после импорта (чекбоксы/свои слова из UI, см. install_word_list).
+    # Без явной передачи ниже keyhunt_worker/ethvanity_worker продолжали бы
+    # искать только по исходному дефолтному списку слов, полностью
+    # игнорируя то, что пользователь выключил или добавил в UI.
+    extra_hex_prefixes.extend(
+        w.lower() for w in patterns.SEARCH_WORDS if re.fullmatch(r"[0-9a-fA-F]+", w)
+    )
+    extra_hex_prefixes = sorted(set(extra_hex_prefixes))
 
     valid_preset = preset_key == "all" or any(
         preset_key in NETWORK_PRESETS.get(n, PRESETS) for n in networks
@@ -378,16 +414,39 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     # Ускоритель ETH-поиска: сперва пробуем keyhunt (если он установлен у
     # конкретного пользователя отдельно — GPU/OpenCL режим), иначе — встроенный
     # ethvanity (идёт в комплекте с приложением, CPU, без внешних зависимостей).
+    #
+    # У keyhunt (проверено эмпирически на реальном бинарнике, не задокументировано)
+    # его флаг -v для ETH принимает ТОЛЬКО префиксы с чётным числом hex-символов
+    # (внутри конвертирует строку в байты) и умеет искать ТОЛЬКО префикс, не
+    # суффикс/подстроку. Если цель не подходит под это, keyhunt тихо пишет в
+    # свой вывод `"..." was NOT Added` и продолжает работать, ничего реально
+    # не ища — приложение показывало бы "Accelerated: keyhunt" и часами не
+    # находило то, что на самом деле лежит в паттерне за секунды. Это касается
+    # не только custom-паттерна: 3 из 10 дефолтных слов ("badbadbad",
+    # "badc0de", "6666666") сами по себе нечётной длины и ВСЕГДА молча
+    # отбрасывались keyhunt'ом, даже без единой настройки пользователем.
+    # Поэтому берём ethvanity (без этого ограничения, матчит по отдельным
+    # полубайтам), если keyhunt не может покрыть ВЕСЬ текущий набор целей —
+    # custom-паттерн и текущий список слов вместе.
     eth_tool_path: Optional[str] = None
     eth_tool_name: Optional[str] = None
     if not fake_found_interval and "eth" in networks:
         keyhunt_path = find_keyhunt()
-        if keyhunt_path:
+        if keyhunt_path and _keyhunt_can_target_all(extra_hex_prefixes, custom_pattern):
             eth_tool_path, eth_tool_name = keyhunt_path, "keyhunt"
-        else:
+        elif not custom_pattern or custom_pattern[1] == "prefix":
             ethvanity_path = find_ethvanity()
             if ethvanity_path:
                 eth_tool_path, eth_tool_name = ethvanity_path, "ethvanity"
+            elif keyhunt_path:
+                # ethvanity недоступен, а keyhunt не может покрыть все текущие
+                # цели — лучше честный CPU-перебор (найдёт всё, просто
+                # медленнее), чем "ускоренный" поиск, который часть целей
+                # молча не ищет.
+                pass
+        # suffix/contains custom-паттерн: ни keyhunt, ни ethvanity не умеют
+        # искать не-префиксы — остаётся обычная CPU-генерация с полной
+        # Python-проверкой предиката, она матчит любой режим корректно.
 
     eth_accelerated = eth_tool_path is not None
     cpu_nets = [n for n in networks if n != "eth" or not eth_accelerated]
