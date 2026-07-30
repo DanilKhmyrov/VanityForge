@@ -4,6 +4,8 @@
 
 A generator for "vanity" crypto addresses: **Solana**, **EVM (ETH, BSC, Polygon, etc.)**, **Tron**, **TON**. Comes in two forms — a native macOS app (live stats, a speed chart, a searchable find history) and a plain CLI script, both built on the same Python engine.
 
+![VanityForge screenshot](docs/screenshot.png)
+
 ## Features
 
 - Search up to 4 networks at once, with built-in condition presets (repeated characters, palindromes, word lists, sequences…) plus a case-sensitive custom pattern
