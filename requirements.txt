@@ -1,0 +1,15 @@
+# Solana
+solders>=0.21.0
+
+# Ethereum / Tron - быстрая криптография (опционально, но желательно)
+coincurve>=20.0.0
+pycryptodome>=3.20.0
+
+# Ethereum fallback (если нет coincurve)
+eth-account>=0.10.0
+
+# Web3 (для eth-account)
+web3>=6.0.0
+
+# TON (опционально, без неё — mock-адреса)
+tonsdk>=1.0.0

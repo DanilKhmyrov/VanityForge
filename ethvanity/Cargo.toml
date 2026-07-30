@@ -1,0 +1,17 @@
+[package]
+name = "ethvanity"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Fast multi-threaded Ethereum vanity address prefix searcher (CPU), used as an optional accelerator by VanityForge."
+
+[dependencies]
+secp256k1 = { version = "0.29", features = ["rand"] }
+rand = "0.8"
+tiny-keccak = { version = "2", features = ["keccak"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

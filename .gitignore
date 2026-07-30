@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+venv_pypy/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Type checking
+.mypy_cache/
+.pytest_cache/
+
+# Project output
+results/
+KEYFOUNDKEYFOUND.txt
+
+# System
+.DS_Store
+Thumbs.db
+
+# Audio test files
+*.mp3
+
+# Rust build artifacts
+ethvanity/target/
+
+# Downloaded standalone Python runtime + build-time deps (fetched by
+# Scripts/setup_runtime.sh, not committed — see README for setup)
+build_cache/
+
+# Swift build artifacts / assembled app / disk image
+VanityForge/.build/
+VanityForge/VanityForge.app/
+VanityForge/*.dmg
+VanityForge/Resources/dmg_background.png
