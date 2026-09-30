@@ -432,7 +432,16 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     eth_tool_name: Optional[str] = None
     if not fake_found_interval and "eth" in networks:
         keyhunt_path = find_keyhunt()
-        if keyhunt_path and _keyhunt_can_target_all(extra_hex_prefixes, custom_pattern):
+        # Слова из списка релевантны для eligibility-проверки, только если
+        # текущий поиск реально от них зависит (пресет "word"/"all") — иначе
+        # они и так попадают в extra_hex_prefixes для генерации кандидатов
+        # (как и раньше, безвредно), но не должны отключать keyhunt для
+        # пресетов вроде "prefix10", которые со словами вообще не связаны.
+        word_targets_relevant = preset_key in ("word", "all")
+        word_hex_targets = [
+            w.lower() for w in patterns.SEARCH_WORDS if re.fullmatch(r"[0-9a-fA-F]+", w)
+        ] if word_targets_relevant else []
+        if keyhunt_path and _keyhunt_can_target_all(word_hex_targets, custom_pattern):
             eth_tool_path, eth_tool_name = keyhunt_path, "keyhunt"
         elif not custom_pattern or custom_pattern[1] == "prefix":
             ethvanity_path = find_ethvanity()
