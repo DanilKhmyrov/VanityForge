@@ -52,6 +52,23 @@ if [ ! -f "$ROOT/Resources/AppIcon.icns" ]; then
     iconutil -c icns "$ICONSET" -o "$ROOT/Resources/AppIcon.icns"
 fi
 
+# Старые версии приложения сохраняли находки (с приватными ключами) внутрь
+# бандла — rm -rf ниже стёр бы их. Переносим в постоянную папку приложения.
+LEGACY_RESULTS="$APP/Contents/Resources/PythonRuntime/results"
+if [ -d "$LEGACY_RESULTS" ]; then
+    SAFE_RESULTS="$HOME/Library/Application Support/VanityForge/results"
+    echo "==> Сохраняю находки из старого .app в $SAFE_RESULTS"
+    mkdir -p "$SAFE_RESULTS"
+    rsync -a --ignore-existing "$LEGACY_RESULTS/" "$SAFE_RESULTS/"
+    # Удаляем бандл, только если каждая находка точно есть в новой папке.
+    (cd "$LEGACY_RESULTS" && find . -type f) | while read -r f; do
+        if [ ! -f "$SAFE_RESULTS/$f" ]; then
+            echo "    не удалось сохранить $f — сборка остановлена, старый .app не тронут" >&2
+            exit 1
+        fi
+    done
+fi
+
 echo "==> Assembling .app bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

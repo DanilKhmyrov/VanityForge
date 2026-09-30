@@ -140,6 +140,8 @@ The shorter and more "popular" a pattern, the more often it matches — a short 
 
 ## Save file structure
 
+The app keeps finds in `~/Library/Application Support/VanityForge/results/` (the "Results folder" button in the feed and in History); the command-line scripts use `results/` next to themselves. Finds are never stored inside the `.app` — rebuilding the bundle would wipe them.
+
 ```
 results/
 ├── sol/

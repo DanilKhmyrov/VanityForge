@@ -6,9 +6,7 @@ struct HistoryView: View {
     @State private var isLoading = true
     @State private var expanded: Set<String> = []
 
-    private static let resultsDir = PythonBridge.bridgeScript
-        .deletingLastPathComponent()
-        .appendingPathComponent("results")
+    private static var resultsDir: URL { ResultsLocation.directory }
 
     private var totalCount: Int { groups.reduce(0) { $0 + $1.totalCount } }
 

@@ -34,6 +34,7 @@ final class PythonBridge {
             if !merged.contains(path) { merged.append(path) }
         }
         env["PATH"] = merged.joined(separator: ":")
+        env[ResultsLocation.environmentKey] = ResultsLocation.directory.path
         return env
     }
 

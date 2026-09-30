@@ -10,6 +10,7 @@ struct VanityForgeApp: App {
         let catalog = AppCatalog()
         _catalog = State(initialValue: catalog)
         _session = State(initialValue: SessionViewModel(catalog: catalog))
+        ResultsLocation.migrateLegacyResults()
     }
 
     var body: some Scene {

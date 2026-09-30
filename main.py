@@ -30,7 +30,11 @@ try:
 except ImportError:
     _TO_CHECKSUM = None
 
-RESULTS_DIR = Path("results")
+# Куда сохраняются находки. Приложение передаёт постоянную папку
+# (~/Library/Application Support/VanityForge/results) через переменную
+# окружения — внутри .app их хранить нельзя: пересборка бандла стирает его
+# целиком. Путь абсолютный, чтобы filepath в событиях открывался откуда угодно.
+RESULTS_DIR = Path(os.environ.get("VANITYFORGE_RESULTS_DIR") or "results").absolute()
 STATS_UPDATE_INTERVAL = 2
 
 # Hex-префиксы, которые keyhunt ищет напрямую (быстрее, чем фильтровать
