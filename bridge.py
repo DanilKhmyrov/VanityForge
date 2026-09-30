@@ -32,6 +32,7 @@ from typing import List, Optional, Tuple
 import create2
 import main as core
 import splitkey
+import tonsub
 import patterns
 from eth import ETH
 from main import cpu_worker, find_keyhunt, keyhunt_worker, save_result
@@ -864,8 +865,141 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
         })
 
 
+def generate_tonsub_json(raw_key: str, pattern: str, mode: str, case_sensitive: bool, bounceable: bool,
+                         worker_override: Optional[int] = None, lang: str = "ru") -> None:
+    """TON: перебор номера подкошелька v4r2 для существующего ключа. Протокол —
+    как у остальных режимов; пространство конечное (2^32), поэтому поиск сам
+    завершается с reason "exhausted"."""
+    try:
+        public_key = tonsub.resolve_public_key(raw_key)
+    except ValueError as error:
+        emit({"type": "error", "message": str(error), "fatal": True})
+        return
+    if not pattern or not re.fullmatch(r"[A-Za-z0-9_\-]+", pattern):
+        message = ("Паттерн TON: только A-Z a-z 0-9 - _" if lang != "en"
+                   else "TON pattern: only A-Z a-z 0-9 - _")
+        emit({"type": "error", "message": message, "fatal": True})
+        return
+
+    stop_event = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop_event.set())
+    signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
+    workers = worker_override or (os.cpu_count() or 8)
+    result_queue: Queue = mp.Queue()
+    stats_counter = Value(ctypes.c_ulonglong, 0)
+    engine, procs = tonsub.start_search(public_key, pattern, mode, case_sensitive, bounceable,
+                                        workers, result_queue, stats_counter, stop_event)
+    label = (_CUSTOM_MODE_LABELS_EN if lang == "en" else _CUSTOM_MODE_LABELS).get(mode, mode)
+    conditions = f'"{pattern}" ({label})' + (" [Aa]" if case_sensitive else "")
+    network_full = "TON · subwallet" if lang == "en" else "TON · подкошелёк"
+
+    emit({
+        "type": "started",
+        "networks": ["tonsub"],
+        "networks_full": {"tonsub": network_full},
+        "preset": "_custom",
+        "preset_desc": conditions,
+        "cpu_count": os.cpu_count() or 0,
+        "workers_total": workers,
+        "gpu": {"available": engine == "ethvanity", "path": None, "tool": engine if engine == "ethvanity" else None},
+        "fake": False,
+    })
+    threading.Thread(target=stdin_listener, args=(stop_event,), daemon=True).start()
+    start_time = time.time()
+
+    def stats_loop() -> None:
+        window: "deque[Tuple[float, int]]" = deque([(start_time, 0)], maxlen=SPEED_WINDOW_TICKS + 1)
+        while not stop_event.is_set():
+            time.sleep(STATS_UPDATE_INTERVAL)
+            now, current = time.time(), stats_counter.value
+            oldest_time, oldest_count = window[0]
+            dt = now - oldest_time
+            emit({
+                "type": "stats",
+                "elapsed_seconds": round(now - start_time, 1),
+                "total_checked": current,
+                "speed": int((current - oldest_count) / dt) if dt > 0 else 0,
+                "workers_total": workers,
+            })
+            window.append((now, current))
+
+    threading.Thread(target=stats_loop, daemon=True).start()
+
+    found_count, finished_workers, reason = 0, 0, "user_stop"
+    expected_done = 1 if engine == "ethvanity" else workers
+    try:
+        while not stop_event.is_set():
+            try:
+                address, wallet_id = result_queue.get(timeout=0.5)
+            except Exception:
+                continue
+            if address == "error":
+                emit({"type": "error", "message": wallet_id, "fatal": True})
+                break
+            if address == "done":
+                finished_workers += 1
+                if finished_workers >= expected_done:
+                    reason = "exhausted"
+                    break
+                continue
+            found_count += 1
+            if found_count > MAX_DETAILED_FINDS:
+                continue
+            filepath = tonsub.save_result(core.RESULTS_DIR, address, wallet_id, public_key, conditions)
+            emit({
+                "type": "found",
+                "seq": found_count,
+                "network": "tonsub",
+                "network_full": network_full,
+                "address": address,
+                "checksum_address": None,
+                "private_key": "",
+                "matched": ["_custom"],
+                "matched_desc": [conditions],
+                "conditions_str": conditions,
+                "found_words": [],
+                "filepath": filepath,
+                "found_at": datetime.now().isoformat(timespec="seconds"),
+                "wallet_id": wallet_id,
+                "owner_pubkey": public_key.hex(),
+            })
+    finally:
+        stop_event.set()
+        for p in procs:
+            if isinstance(p, mp.Process):
+                p.terminate()
+            else:
+                p.kill()
+        total = stats_counter.value
+        emit({
+            "type": "stopped",
+            "reason": reason,
+            "total_checked": total,
+            "found_count": found_count,
+            "elapsed_seconds": round(time.time() - start_time, 1),
+            "rarity_1_in": (total // found_count) if found_count > 0 else None,
+        })
+
+
 def main() -> None:
     args = sys.argv[1:]
+
+    if "--ton-subwallet" in args:
+        lang = "en" if "--lang" in args and args[args.index("--lang") + 1:][:1] == ["en"] else "ru"
+        try:
+            raw_key = args[args.index("--ton-subwallet") + 1]
+        except IndexError:
+            raw_key = ""
+        mode, _, pattern = (args[args.index("--custom") + 1] if "--custom" in args else "").partition(":")
+        workers = None
+        if "--workers" in args:
+            try:
+                workers = max(1, int(args[args.index("--workers") + 1]))
+            except (IndexError, ValueError):
+                workers = None
+        generate_tonsub_json(raw_key, pattern.strip(), mode.strip().lower() or "prefix",
+                             "--custom-case" in args, "--bounceable" in args, workers, lang=lang)
+        return
 
     if "--create2" in args:
         lang = "en" if "--lang" in args and args[args.index("--lang") + 1:][:1] == ["en"] else "ru"

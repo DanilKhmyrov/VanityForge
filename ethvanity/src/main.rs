@@ -36,6 +36,7 @@ use std::time::Duration;
 use tiny_keccak::{Hasher, Keccak};
 
 mod create2;
+mod ton;
 
 struct Args {
     prefixes: Vec<Vec<u8>>, // каждый префикс — последовательность полубайтов (0..=15)
@@ -139,6 +140,10 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn main() {
+    if env::args().any(|a| a == "--ton-subwallet") {
+        ton::run();
+        return;
+    }
     if env::args().any(|a| a == "--create2" || a == "--create3") {
         create2::run();
         return;
