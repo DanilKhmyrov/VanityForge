@@ -11,6 +11,7 @@ enum NetworkVisual {
         "trx": [Color(red: 0.96, green: 0.22, blue: 0.27), Color(red: 0.98, green: 0.56, blue: 0.24)],
         "ton": [Color(red: 0.16, green: 0.64, blue: 0.98), Color(red: 0.42, green: 0.86, blue: 1.00)],
         "create2": [Color(red: 0.98, green: 0.72, blue: 0.22), Color(red: 0.96, green: 0.42, blue: 0.30)],
+        "create3": [Color(red: 0.36, green: 0.86, blue: 0.62), Color(red: 0.18, green: 0.62, blue: 0.86)],
     ]
 
     static func gradient(for key: String) -> LinearGradient {

@@ -7,7 +7,10 @@ struct Create2Form: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            section(session.t(.sectionFactory)) { factoryPicker }
+            section(session.t(.sectionKind)) { kindPicker }
+            if session.contractKind == .create2 {
+                section(session.t(.sectionFactory)) { factoryPicker }
+            }
             section(session.t(.sectionContract)) { contractFields }
             section(session.t(.sectionTarget)) { targetPicker }
         }
@@ -16,6 +19,39 @@ struct Create2Form: View {
         .onChange(of: session.create2Caller) { session.saveCreate2Settings() }
         .onChange(of: session.create2CustomFactory) { session.saveCreate2Settings() }
         .onChange(of: session.create2Prefix) { session.saveCreate2Settings() }
+    }
+
+    private var kindPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                ForEach(ContractKind.allCases) { kind in
+                    Button {
+                        session.contractKind = kind
+                        session.saveCreate2Settings()
+                    } label: {
+                        Text(kind.label)
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity)
+                            .background(Capsule().fill(session.contractKind == kind ? Color.white.opacity(0.13) : Color.white.opacity(0.03)))
+                            .foregroundStyle(session.contractKind == kind ? .primary : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text(session.contractKind.hint(session.language))
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            if session.contractKind == .create3 {
+                Text("CreateX \(ContractKind.createX)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+        }
     }
 
     private var factoryPicker: some View {
@@ -64,10 +100,12 @@ struct Create2Form: View {
 
     private var contractFields: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HexField(placeholder: session.t(.create2InitCodeHash),
-                     text: Binding(get: { session.create2InitCodeHash }, set: { session.create2InitCodeHash = $0 }),
-                     valid: session.create2InitCodeHash.isEmpty || session.create2InitCodeHashValid)
-                .help(session.t(.create2InitCodeHashHelp))
+            if session.contractKind == .create2 {
+                HexField(placeholder: session.t(.create2InitCodeHash),
+                         text: Binding(get: { session.create2InitCodeHash }, set: { session.create2InitCodeHash = $0 }),
+                         valid: session.create2InitCodeHash.isEmpty || session.create2InitCodeHashValid)
+                    .help(session.t(.create2InitCodeHashHelp))
+            }
 
             HexField(placeholder: session.t(.create2Caller),
                      text: Binding(get: { session.create2Caller }, set: { session.create2Caller = $0 }),
@@ -75,7 +113,7 @@ struct Create2Form: View {
                 .help(session.t(.create2CallerHelp))
 
             if session.create2CallerTrimmed.isEmpty {
-                Warning(text: session.t(.create2CallerMissing))
+                Warning(text: session.t(session.contractKind == .create3 ? .create3CallerMissing : .create2CallerMissing))
             }
         }
     }

@@ -257,6 +257,9 @@ def find_ethvanity() -> Optional[str]:
     local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ethvanity")
     if os.path.isfile(local) and os.access(local, os.X_OK):
         return local
+    built = os.path.join(local, "target", "release", "ethvanity")
+    if os.path.isfile(built) and os.access(built, os.X_OK):
+        return built
     return shutil.which("ethvanity")
 
 
@@ -710,12 +713,13 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
     result_queue: Queue = mp.Queue()
     stats_counter = Value(ctypes.c_ulonglong, 0)
     engine, procs = create2.start_search(params, workers, result_queue, stats_counter, stop_event)
-    network_full = create2.NETWORK_FULL.get(lang, create2.NETWORK_FULL["ru"])
+    network_full = params.network_full(lang)
+    kind = params.kind
 
     emit({
         "type": "started",
-        "networks": ["create2"],
-        "networks_full": {"create2": network_full},
+        "networks": [kind],
+        "networks_full": {kind: network_full},
         "preset": params.goal,
         "preset_desc": params.describe(lang),
         "cpu_count": os.cpu_count() or 0,
@@ -764,7 +768,7 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
             emit({
                 "type": "found",
                 "seq": found_count,
-                "network": "create2",
+                "network": kind,
                 "network_full": network_full,
                 "address": address,
                 "checksum_address": create2.to_checksum(address),
@@ -777,7 +781,7 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
                 "found_at": datetime.now().isoformat(timespec="seconds"),
                 "salt": salt,
                 "factory": create2.to_checksum(params.factory),
-                "init_code_hash": params.init_code_hash,
+                "init_code_hash": params.init_code_hash if kind == "create2" else None,
                 "caller": create2.to_checksum(params.caller),
                 "leading_zero_bytes": create2.leading_zero_bytes(address),
                 "zero_bytes": create2.zero_bytes(address),

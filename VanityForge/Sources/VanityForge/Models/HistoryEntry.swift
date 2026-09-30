@@ -55,7 +55,7 @@ struct HistoryNetworkGroup: Identifiable {
 enum HistoryLoader {
     static let networkFullNames: [String: String] = [
         "sol": "Solana", "eth": "EVM (ETH, BSC, Polygon)", "trx": "Tron", "ton": "TON",
-        "create2": "CREATE2",
+        "create2": "CREATE2", "create3": "CREATE3",
     ]
 
     private static func isDirectory(_ url: URL) -> Bool {

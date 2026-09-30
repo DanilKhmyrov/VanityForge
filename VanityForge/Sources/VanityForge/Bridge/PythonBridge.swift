@@ -62,11 +62,11 @@ final class PythonBridge {
     }
 
     /// Режим CREATE2: тот же протокол событий, другие аргументы (см. create2.py).
-    func startCreate2(factory: String, initCodeHash: String, caller: String, goal: Create2Goal,
+    func startCreate2(kind: ContractKind, factory: String, initCodeHash: String, caller: String, goal: Create2Goal,
                       minBytes: Int, prefix: String, hookFlags: UInt16, workerCount: Int?,
                       language: AppLanguage) -> AsyncStream<BridgeEvent> {
         var arguments = [
-            "--create2", "--lang", language.rawValue,
+            "--create2", "--kind", kind.rawValue, "--lang", language.rawValue,
             "--factory", factory, "--init-code-hash", initCodeHash,
             "--goal", goal.rawValue, "--min", String(minBytes),
             "--prefix", prefix, "--hook-flags", String(hookFlags, radix: 16),

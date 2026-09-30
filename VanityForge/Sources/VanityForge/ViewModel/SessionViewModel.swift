@@ -68,6 +68,7 @@ final class SessionViewModel {
     var customPatternMode: CustomPatternMode = .prefix
     var customPatternCaseSensitive: Bool = false
 
+    var contractKind: ContractKind = .create2
     var create2Factory: Create2Factory = .immutable
     var create2CustomFactory: String = ""
     var create2InitCodeHash: String = ""
@@ -141,11 +142,17 @@ final class SessionViewModel {
     /// Перебор salt для CREATE2 в разы быстрее перебора ключей — его скорость
     /// меряется и хранится отдельно, иначе оценки времени врали бы в обе стороны.
     var lastMeasuredCreate2Speed: Double?
+    var lastMeasuredCreate3Speed: Double?
     var speedEstimateAuto: Bool = true
     var manualSpeedText: String = ""
 
     var assumedSpeed: Double? {
-        let last = searchMode == .contracts ? lastMeasuredCreate2Speed : lastMeasuredSpeed
+        let last: Double?
+        switch (searchMode, contractKind) {
+        case (.contracts, .create2): last = lastMeasuredCreate2Speed
+        case (.contracts, .create3): last = lastMeasuredCreate3Speed
+        default: last = lastMeasuredSpeed
+        }
         if speedEstimateAuto, let last, last > 0 { return last }
         let cleaned = manualSpeedText.filter { $0.isNumber || $0 == "." }
         guard let value = Double(cleaned), value > 0 else { return nil }
@@ -204,7 +211,7 @@ final class SessionViewModel {
     var orderedNetworks: [String] { catalog.networkOrder.filter { selectedNetworks.contains($0) } }
 
     /// Ключ цвета для фона/кнопок: у режима контрактов свой акцент.
-    var accentKey: String? { searchMode == .contracts ? "create2" : orderedNetworks.first }
+    var accentKey: String? { searchMode == .contracts ? contractKind.rawValue : orderedNetworks.first }
 
     var availablePresets: [PresetItem] { catalog.presetOptions(for: selectedNetworks) }
 
@@ -216,7 +223,8 @@ final class SessionViewModel {
 
     var canStart: Bool {
         if searchMode == .contracts {
-            guard create2FactoryValid, create2InitCodeHashValid, create2CallerValid else { return false }
+            guard create2CallerValid else { return false }
+            if contractKind == .create2 { guard create2FactoryValid, create2InitCodeHashValid else { return false } }
             if create2Goal == .prefix { return create2PrefixValid }
             return true
         }
@@ -254,6 +262,7 @@ final class SessionViewModel {
         var selectedWords: [String]?
         var customWords: [String]?
         var searchMode: String?
+        var contractKind: String?
         var create2Factory: String?
         var create2CustomFactory: String?
         var create2InitCodeHash: String?
@@ -263,6 +272,7 @@ final class SessionViewModel {
         var create2Prefix: String?
         var create2HookFlags: UInt16?
         var lastMeasuredCreate2Speed: Double?
+        var lastMeasuredCreate3Speed: Double?
     }
 
     /// Настройки запоминаются между запусками приложения — чтобы не
@@ -288,6 +298,7 @@ final class SessionViewModel {
             selectedWords: Array(selectedWords),
             customWords: customWords,
             searchMode: searchMode.rawValue,
+            contractKind: contractKind.rawValue,
             create2Factory: create2Factory.rawValue,
             create2CustomFactory: create2CustomFactory,
             create2InitCodeHash: create2InitCodeHash,
@@ -296,7 +307,8 @@ final class SessionViewModel {
             create2MinBytes: create2MinBytes,
             create2Prefix: create2Prefix,
             create2HookFlags: create2HookFlags,
-            lastMeasuredCreate2Speed: lastMeasuredCreate2Speed
+            lastMeasuredCreate2Speed: lastMeasuredCreate2Speed,
+            lastMeasuredCreate3Speed: lastMeasuredCreate3Speed
         )
         guard let data = try? JSONEncoder().encode(settings) else { return }
         UserDefaults.standard.set(data, forKey: Self.settingsKey)
@@ -320,6 +332,7 @@ final class SessionViewModel {
         if let words = settings.selectedWords { selectedWords = Set(words) }
         customWords = settings.customWords ?? []
         if let mode = settings.searchMode.flatMap(SearchMode.init(rawValue:)) { searchMode = mode }
+        if let kind = settings.contractKind.flatMap(ContractKind.init(rawValue:)) { contractKind = kind }
         if let factory = settings.create2Factory.flatMap(Create2Factory.init(rawValue:)) { create2Factory = factory }
         create2CustomFactory = settings.create2CustomFactory ?? ""
         create2InitCodeHash = settings.create2InitCodeHash ?? ""
@@ -329,6 +342,7 @@ final class SessionViewModel {
         create2Prefix = settings.create2Prefix ?? ""
         create2HookFlags = settings.create2HookFlags ?? 0
         lastMeasuredCreate2Speed = settings.lastMeasuredCreate2Speed
+        lastMeasuredCreate3Speed = settings.lastMeasuredCreate3Speed
     }
 
     func start() {
@@ -349,7 +363,7 @@ final class SessionViewModel {
 
         if searchMode == .contracts {
             let stream = bridge.startCreate2(
-                factory: create2FactoryAddress, initCodeHash: create2InitCodeHash.trimmingCharacters(in: .whitespacesAndNewlines),
+                kind: contractKind, factory: create2FactoryAddress, initCodeHash: create2InitCodeHash.trimmingCharacters(in: .whitespacesAndNewlines),
                 caller: create2CallerTrimmed, goal: create2Goal, minBytes: create2MinBytes,
                 prefix: Create2Math.strip(create2Prefix), hookFlags: create2HookFlags,
                 workerCount: workerCount, language: language
@@ -424,8 +438,8 @@ final class SessionViewModel {
             // не перезаписываем ими предыдущее, более надёжное измерение.
             if e.elapsedSeconds >= 10, e.totalChecked > 0 {
                 let speed = Double(e.totalChecked) / e.elapsedSeconds
-                if started?.networks == ["create2"] {
-                    lastMeasuredCreate2Speed = speed
+                if let net = started?.networks.first, let kind = ContractKind(rawValue: net) {
+                    if kind == .create3 { lastMeasuredCreate3Speed = speed } else { lastMeasuredCreate2Speed = speed }
                 } else {
                     lastMeasuredSpeed = speed
                 }

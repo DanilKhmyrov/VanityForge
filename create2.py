@@ -15,6 +15,7 @@ CREATE2: подбор salt для адреса смарт-контракта (м
 медленный запасной перебор на Python на случай, если ethvanity не собран.
 
 CLI:
+    python3 create2.py --kind create3 --caller 0x… --goal leading --min 4
     python3 create2.py --init-code-hash 0x… [--factory 0x…] [--caller 0x…]
                        [--goal leading|zeros|prefix|hook] [--min N]
                        [--prefix dead] [--hook-flags 00C0] [--workers N]
@@ -44,6 +45,11 @@ FACTORIES: Dict[str, Tuple[str, str, bool]] = {
 }
 
 GOALS = ("leading", "zeros", "prefix", "hook")
+KINDS = ("create2", "create3")
+
+# CREATE3 через CreateX: адрес не зависит от кода. См. ethvanity/src/create2.rs.
+CREATEX = "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed"
+CREATE3_PROXY_HASH = bytes.fromhex("21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f")
 
 # Общие объекты multiprocessing должны жить, пока дочерние процессы к ним
 # подключаются: при spawn ребёнок открывает семафор по имени уже после
@@ -67,14 +73,24 @@ GOAL_DESC = {
     },
 }
 
-NETWORK_FULL = {"ru": "Контракт · CREATE2", "en": "Contract · CREATE2"}
+NETWORK_FULL = {
+    "create2": {"ru": "Контракт · CREATE2", "en": "Contract · CREATE2"},
+    "create3": {"ru": "Контракт · CREATE3", "en": "Contract · CREATE3"},
+}
 
 
 class Params:
     def __init__(self, factory: str, init_code_hash: str, caller: str, goal: str,
-                 min_bytes: int = 1, prefix: str = "", hook_flags: int = 0):
-        self.factory = normalize_hex(factory, 20, "factory")
-        self.init_code_hash = normalize_hex(init_code_hash, 32, "init code hash")
+                 min_bytes: int = 1, prefix: str = "", hook_flags: int = 0, kind: str = "create2"):
+        if kind not in KINDS:
+            raise ValueError(f"unknown kind '{kind}'")
+        self.kind = kind
+        if kind == "create3":
+            self.factory = normalize_hex(CREATEX, 20, "factory")
+            self.init_code_hash = "0x" + "00" * 32
+        else:
+            self.factory = normalize_hex(factory, 20, "factory")
+            self.init_code_hash = normalize_hex(init_code_hash, 32, "init code hash")
         self.caller = normalize_hex(caller, 20, "caller") if caller.strip() else "0x" + "00" * 20
         if goal not in GOALS:
             raise ValueError(f"unknown goal '{goal}'")
@@ -96,9 +112,16 @@ class Params:
             return f"prefix_{self.prefix}"
         return f"hook_{self.hook_flags:04x}"
 
+    def network_full(self, lang: str = "ru") -> str:
+        names = NETWORK_FULL[self.kind]
+        return names.get(lang, names["ru"])
+
     def engine_args(self) -> List[str]:
-        args = ["--factory", self.factory, "--init-code-hash", self.init_code_hash,
-                "--caller", self.caller, "--goal", self.goal, "--min", str(self.min_bytes)]
+        if self.kind == "create3":
+            args = ["--create3", "--caller", self.caller, "--goal", self.goal, "--min", str(self.min_bytes)]
+        else:
+            args = ["--create2", "--factory", self.factory, "--init-code-hash", self.init_code_hash,
+                    "--caller", self.caller, "--goal", self.goal, "--min", str(self.min_bytes)]
         if self.goal == "prefix":
             args += ["--prefix", self.prefix]
         if self.goal == "hook":
@@ -113,9 +136,32 @@ def normalize_hex(raw: str, size: int, label: str) -> str:
     return "0x" + value
 
 
+def _keccak(data: bytes) -> bytes:
+    return keccak.new(digest_bits=256, data=data).digest()
+
+
 def compute_address(factory: str, salt: str, init_code_hash: str) -> str:
     data = b"\xff" + bytes.fromhex(factory[2:]) + bytes.fromhex(salt[2:]) + bytes.fromhex(init_code_hash[2:])
-    return "0x" + keccak.new(digest_bits=256, data=data).digest()[12:].hex()
+    return "0x" + _keccak(data)[12:].hex()
+
+
+def create3_address(salt: bytes, caller: bytes) -> bytes:
+    """Адрес, который CreateX.deployCreate3 даст для salt при вызове с caller.
+    Разрешённый salt (первые 20 байт = caller, 21-й байт 0x00) охраняется
+    через keccak(caller ++ salt), иначе — keccak(salt)."""
+    if caller != bytes(20) and salt[:20] == caller and salt[20] == 0:
+        guarded = _keccak(bytes(12) + caller + salt)
+    else:
+        guarded = _keccak(salt)
+    proxy = _keccak(b"\xff" + bytes.fromhex(CREATEX[2:]) + guarded + CREATE3_PROXY_HASH)[12:]
+    return _keccak(b"\xd6\x94" + proxy + b"\x01")[12:]
+
+
+def params_address(params: "Params", salt: str) -> str:
+    """Адрес для найденного salt — независимая перепроверка находки движка."""
+    if params.kind == "create3":
+        return "0x" + create3_address(bytes.fromhex(salt[2:]), bytes.fromhex(params.caller[2:])).hex()
+    return compute_address(params.factory, salt, params.init_code_hash)
 
 
 def leading_zero_bytes(address: str) -> int:
@@ -148,16 +194,17 @@ def to_checksum(address: str) -> str:
 
 
 def save_result(results_dir: Path, params: Params, address: str, salt: str, lang: str = "ru") -> str:
-    save_dir = results_dir / "create2" / params.folder()
+    save_dir = results_dir / params.kind / params.folder()
     save_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = save_dir / f"{timestamp}_{address[:12]}.txt"
     with open(filepath, "w") as f:
-        f.write(f"Network:    {NETWORK_FULL.get(lang, NETWORK_FULL['ru'])}\n")
+        f.write(f"Network:    {params.network_full(lang)}\n")
         f.write(f"Address:    {to_checksum(address)}\n")
         f.write(f"Salt:       {salt}\n")
         f.write(f"Factory:    {to_checksum(params.factory)}\n")
-        f.write(f"InitCode:   {params.init_code_hash}\n")
+        if params.kind == "create2":
+            f.write(f"InitCode:   {params.init_code_hash}\n")
         f.write(f"Caller:     {to_checksum(params.caller)}\n")
         f.write(f"Conditions: {params.describe(lang)}\n")
         f.write(f"Found:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -191,12 +238,19 @@ def _goal_check(params: Params) -> Callable[[bytes], Optional[int]]:
 def python_worker(params: Params, worker_id: int, result_queue: "mp.Queue", stats_counter, best) -> None:
     factory = bytes.fromhex(params.factory[2:])
     code_hash = bytes.fromhex(params.init_code_hash[2:])
-    head = b"\xff" + factory + bytes.fromhex(params.caller[2:]) + bytes([worker_id & 0xFF]) + secrets.token_bytes(3)
+    caller = bytes.fromhex(params.caller[2:])
+    if params.kind == "create3":
+        head = b"\xff" + factory + caller + b"\x00" + bytes([worker_id & 0xFF]) + secrets.token_bytes(2)
+    else:
+        head = b"\xff" + factory + caller + bytes([worker_id & 0xFF]) + secrets.token_bytes(3)
     check = _goal_check(params)
     counter, local = 0, 0
     while True:
         salt_tail = counter.to_bytes(8, "big")
-        address = keccak.new(digest_bits=256, data=head + salt_tail + code_hash).digest()[12:]
+        if params.kind == "create3":
+            address = create3_address(head[21:] + salt_tail, caller)
+        else:
+            address = _keccak(head + salt_tail + code_hash)[12:]
         score = check(address)
         # Как в Rust: для нулей — рекорды, для префикса/хука — первое совпадение,
         # дальше только с бо́льшим числом нулевых байт.
@@ -265,6 +319,7 @@ def params_from_args(args: List[str]) -> Params:
     factory = value("--factory", FACTORIES["immutable"][0])
     factory = FACTORIES[factory][0] if factory in FACTORIES else factory
     return Params(
+        kind=value("--kind", "create2"),
         factory=factory,
         init_code_hash=value("--init-code-hash"),
         caller=value("--caller"),

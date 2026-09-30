@@ -11,6 +11,13 @@
 //! требуют, чтобы они совпадали с msg.sender (или были нулями), иначе
 //! найденный salt мог бы использовать кто угодно, подсмотрев его в мемпуле.
 //!
+//! Режим `--create3` (через фабрику CreateX): адрес не зависит от кода вообще.
+//! CreateX сначала «охраняет» salt — keccak256(msg.sender ++ salt), если первые
+//! 20 байт salt равны вызывающему, а 21-й байт 0x00 (один адрес во всех сетях),
+//! — затем кладёт крошечный прокси по CREATE2, а прокси разворачивает контракт
+//! своим первым CREATE. Итоговый адрес = keccak256(0xd694 ++ proxy ++ 0x01)[12..].
+//! Три keccak на попытку. Раскладка salt: [caller 20][0x00][поток 1][случайные 2][счётчик 8].
+//!
 //! Вывод — тот же построчный JSON, что и в основном режиме:
 //!   {"type":"found","address":"0x...","salt":"0x...","leading_zero_bytes":4,"zero_bytes":5}
 //!   {"type":"stats","checked":123456}
@@ -46,9 +53,20 @@ struct Config {
     caller: [u8; 20],
     goal: Goal,
     threads: usize,
+    create3: bool,
 }
 
 const HOOK_FLAG_MASK: u16 = 0x3FFF;
+
+/// CreateX — одинаковый адрес во всех EVM-сетях.
+const CREATEX: [u8; 20] = [
+    0xba, 0x5e, 0xd0, 0x99, 0x63, 0x3d, 0x3b, 0x31, 0x3e, 0x4d, 0x5f, 0x7b, 0xdc, 0x13, 0x05, 0xd3, 0xc2, 0x8b, 0xa5, 0xed,
+];
+/// keccak256 кода прокси, через который CreateX делает CREATE3.
+const CREATE3_PROXY_HASH: [u8; 32] = [
+    0x21, 0xc3, 0x5d, 0xbe, 0x1b, 0x34, 0x4a, 0x24, 0x88, 0xcf, 0x33, 0x21, 0xd6, 0xce, 0x54, 0x2f, 0x8e, 0x9f, 0x30, 0x55,
+    0x44, 0xff, 0x09, 0xe4, 0x99, 0x3a, 0x62, 0x31, 0x9a, 0x49, 0x7c, 0x1f,
+];
 
 fn parse_hex<const N: usize>(raw: &str) -> Option<[u8; N]> {
     let s = raw.trim().trim_start_matches("0x").trim_start_matches("0X");
@@ -75,12 +93,21 @@ fn parse_config() -> Config {
         args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
     };
 
-    let factory = value("--factory")
-        .and_then(|v| parse_hex::<20>(&v))
-        .unwrap_or_else(|| fail("--factory must be a 20-byte hex address"));
-    let init_code_hash = value("--init-code-hash")
-        .and_then(|v| parse_hex::<32>(&v))
-        .unwrap_or_else(|| fail("--init-code-hash must be a 32-byte hex hash"));
+    let create3 = args.iter().any(|a| a == "--create3");
+    let factory = if create3 {
+        CREATEX
+    } else {
+        value("--factory")
+            .and_then(|v| parse_hex::<20>(&v))
+            .unwrap_or_else(|| fail("--factory must be a 20-byte hex address"))
+    };
+    let init_code_hash = if create3 {
+        [0u8; 32]
+    } else {
+        value("--init-code-hash")
+            .and_then(|v| parse_hex::<32>(&v))
+            .unwrap_or_else(|| fail("--init-code-hash must be a 32-byte hex hash"))
+    };
     let caller = match value("--caller") {
         Some(v) if !v.trim().is_empty() => {
             parse_hex::<20>(&v).unwrap_or_else(|| fail("--caller must be a 20-byte hex address"))
@@ -119,7 +146,7 @@ fn parse_config() -> Config {
         .unwrap_or_else(|| thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
         .max(1);
 
-    Config { factory, init_code_hash, caller, goal, threads }
+    Config { factory, init_code_hash, caller, goal, threads, create3 }
 }
 
 #[inline]
@@ -179,7 +206,11 @@ pub fn run() {
         let checked = Arc::clone(&checked);
         let best = Arc::clone(&best);
         let tx = tx.clone();
-        thread::spawn(move || worker(index as u8, &config, &checked, &best, tx));
+        if config.create3 {
+            thread::spawn(move || worker_create3(index as u8, &config, &checked, &best, tx));
+        } else {
+            thread::spawn(move || worker(index as u8, &config, &checked, &best, tx));
+        }
     }
     drop(tx);
 
@@ -202,6 +233,85 @@ pub fn run() {
             zero_bytes(&addr)
         );
         let _ = std::io::stdout().flush();
+    }
+}
+
+#[inline]
+fn is_hit(goal: &Goal, addr: &[u8], best: &AtomicU32) -> bool {
+    match goal {
+        Goal::LeadingZeros { .. } => addr[0] == 0 && claim_record(best, leading_zero_bytes(addr)),
+        Goal::ZeroBytes { .. } => {
+            let score = zero_bytes(addr);
+            score > best.load(Ordering::Relaxed) && claim_record(best, score)
+        }
+        Goal::Prefix(prefix) => matches_prefix(addr, prefix) && claim_record(best, zero_bytes(addr) + 1),
+        Goal::HookFlags(flags) => {
+            (u16::from_be_bytes([addr[18], addr[19]]) & HOOK_FLAG_MASK) == *flags
+                && claim_record(best, zero_bytes(addr) + 1)
+        }
+    }
+}
+
+#[inline]
+fn keccak(data: &[u8], out: &mut [u8; 32]) {
+    let mut hasher = Keccak::v256();
+    hasher.update(data);
+    hasher.finalize(out);
+}
+
+fn worker_create3(index: u8, config: &Config, checked: &AtomicU64, best: &AtomicU32, tx: mpsc::Sender<([u8; 20], [u8; 32])>) {
+    // Вход «охраны» CreateX: salt, перед которым 32-байтный msg.sender (если
+    // salt разрешённый) — либо просто сам salt (keccak256(abi.encode(salt))).
+    let guarded_by_caller = config.caller != [0u8; 20];
+    let mut guard_input = [0u8; 64];
+    guard_input[12..32].copy_from_slice(&config.caller);
+    guard_input[32..52].copy_from_slice(&config.caller);
+    guard_input[52] = 0x00;
+    guard_input[53] = index;
+    let mut entropy = [0u8; 2];
+    OsRng.fill_bytes(&mut entropy);
+    guard_input[54..56].copy_from_slice(&entropy);
+
+    let mut proxy_preimage = [0u8; 85];
+    proxy_preimage[0] = 0xff;
+    proxy_preimage[1..21].copy_from_slice(&config.factory);
+    proxy_preimage[53..85].copy_from_slice(&CREATE3_PROXY_HASH);
+
+    let mut rlp = [0u8; 23];
+    rlp[0] = 0xd6;
+    rlp[1] = 0x94;
+    rlp[22] = 0x01;
+
+    const REPORT_EVERY: u64 = 16_384;
+    let (mut local, mut counter) = (0u64, 0u64);
+    let mut hash = [0u8; 32];
+
+    loop {
+        guard_input[56..64].copy_from_slice(&counter.to_be_bytes());
+        let guard_slice: &[u8] = if guarded_by_caller { &guard_input } else { &guard_input[32..64] };
+        keccak(guard_slice, &mut hash);
+        proxy_preimage[21..53].copy_from_slice(&hash);
+        keccak(&proxy_preimage, &mut hash);
+        rlp[2..22].copy_from_slice(&hash[12..32]);
+        keccak(&rlp, &mut hash);
+        let addr = &hash[12..32];
+
+        if is_hit(&config.goal, addr, best) {
+            let mut found_addr = [0u8; 20];
+            found_addr.copy_from_slice(addr);
+            let mut salt = [0u8; 32];
+            salt.copy_from_slice(&guard_input[32..64]);
+            if tx.send((found_addr, salt)).is_err() {
+                return;
+            }
+        }
+
+        counter = counter.wrapping_add(1);
+        local += 1;
+        if local >= REPORT_EVERY {
+            checked.fetch_add(local, Ordering::Relaxed);
+            local = 0;
+        }
     }
 }
 
@@ -230,20 +340,7 @@ fn worker(index: u8, config: &Config, checked: &AtomicU64, best: &AtomicU32, tx:
         hasher.finalize(&mut hash);
         let addr = &hash[12..32];
 
-        let hit = match &config.goal {
-            Goal::LeadingZeros { .. } => addr[0] == 0 && claim_record(best, leading_zero_bytes(addr)),
-            Goal::ZeroBytes { .. } => {
-                let score = zero_bytes(addr);
-                score > best.load(Ordering::Relaxed) && claim_record(best, score)
-            }
-            Goal::Prefix(prefix) => matches_prefix(addr, prefix) && claim_record(best, zero_bytes(addr) + 1),
-            Goal::HookFlags(flags) => {
-                (u16::from_be_bytes([addr[18], addr[19]]) & HOOK_FLAG_MASK) == *flags
-                    && claim_record(best, zero_bytes(addr) + 1)
-            }
-        };
-
-        if hit {
+        if is_hit(&config.goal, addr, best) {
             let mut found_addr = [0u8; 20];
             found_addr.copy_from_slice(addr);
             let mut salt = [0u8; 32];

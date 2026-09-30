@@ -251,13 +251,19 @@ struct FoundCardView: View {
     }
 
     private var clientSummary: String {
-        [
+        var lines = [
             "Contract address: \(event.checksumAddress ?? event.address)",
             "Salt:             \(event.salt ?? "")",
             "Factory:          \(event.factory ?? "")",
             "Deployer wallet:  \(event.caller ?? "")",
-            "Init code hash:   \(event.initCodeHash ?? "")",
-        ].joined(separator: "\n")
+        ]
+        if let hash = event.initCodeHash {
+            lines.append("Init code hash:   \(hash)")
+        }
+        if event.network == ContractKind.create3.rawValue {
+            lines.append("Deploy:           CreateX.deployCreate3(salt, initCode) from the deployer wallet — any contract code")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func badge(_ text: String, color: Color) -> some View {

@@ -148,6 +148,10 @@ enum L: String {
     case create2ZeroBytes
     case create2LeadingZeroBytes
     case unitAttemptsPerSec
+    case create2KindHint
+    case create3KindHint
+    case create3CallerMissing
+    case sectionKind
 
     func s(_ lang: AppLanguage) -> String {
         Self.table[self]?[lang] ?? rawValue
@@ -276,6 +280,10 @@ enum L: String {
         .create2CopyForClient: [.ru: "Скопировать для заказчика", .en: "Copy for the client"],
         .create2ZeroBytes: [.ru: "нулевых байт: ", .en: "zero bytes: "],
         .create2LeadingZeroBytes: [.ru: "в начале: ", .en: "leading: "],
+        .create2KindHint: [.ru: "Адрес зависит от кода контракта: нужен хеш кода от заказчика.", .en: "The address depends on the contract code: you need the client's code hash."],
+        .create3KindHint: [.ru: "Адрес не зависит от кода: намайнил один раз — развернуть можно любой контракт через CreateX.deployCreate3.", .en: "The address doesn't depend on the code: mine once, deploy any contract later via CreateX.deployCreate3."],
+        .create3CallerMissing: [.ru: "Без кошелька salt сможет использовать кто угодно — и положить на адрес свой код", .en: "Without a wallet anyone can use the salt — and put their own code at the address"],
+        .sectionKind: [.ru: "Способ развёртывания", .en: "Deployment method"],
         .unitAttemptsPerSec: [.ru: "попыток/с", .en: "tries/s"],
     ]
 }

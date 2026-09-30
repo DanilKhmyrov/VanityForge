@@ -14,6 +14,19 @@ enum SearchMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// CREATE2 — адрес зависит от кода; CREATE3 (через CreateX) — только от salt.
+enum ContractKind: String, Codable, CaseIterable, Identifiable {
+    case create2, create3
+    var id: String { rawValue }
+    var label: String { self == .create2 ? "CREATE2" : "CREATE3" }
+
+    func hint(_ lang: AppLanguage) -> String {
+        self == .create2 ? L.create2KindHint.s(lang) : L.create3KindHint.s(lang)
+    }
+
+    static let createX = "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed"
+}
+
 /// Фабрики CREATE2 с одинаковым адресом во всех EVM-сетях. От фабрики
 /// зависит итоговый адрес, поэтому её выбирает заказчик, а не мы.
 enum Create2Factory: String, Codable, CaseIterable, Identifiable {

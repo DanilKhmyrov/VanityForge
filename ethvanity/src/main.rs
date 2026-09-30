@@ -117,7 +117,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn main() {
-    if env::args().any(|a| a == "--create2") {
+    if env::args().any(|a| a == "--create2" || a == "--create3") {
         create2::run();
         return;
     }
