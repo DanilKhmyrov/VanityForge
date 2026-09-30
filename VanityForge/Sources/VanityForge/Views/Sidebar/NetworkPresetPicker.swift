@@ -32,6 +32,8 @@ struct NetworkPresetPicker: View {
 
                 SplitKeyControl()
 
+                GPUToggle(hint: session.t(.useGPUHintWallets))
+
                 workerControl
 
                 demoToggle

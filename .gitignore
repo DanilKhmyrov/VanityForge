@@ -37,6 +37,7 @@ Thumbs.db
 
 # Rust build artifacts
 ethvanity/target/
+metalvanity/evm/target/
 
 # Downloaded standalone Python runtime + build-time deps (fetched by
 # Scripts/setup_runtime.sh, not committed — see README for setup)

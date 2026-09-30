@@ -1,4 +1,5 @@
 import asyncio
+import sys
 
 from web3 import AsyncWeb3
 
@@ -118,5 +119,5 @@ class ETH:
                 return balances
 
         except Exception as e:
-            print("ETH get_all_balances error:", e)
+            print("ETH get_all_balances error:", e, file=sys.stderr)
             return {}

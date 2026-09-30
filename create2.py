@@ -315,13 +315,15 @@ def _launch(cmd: List[str], params: Params, result_queue, stats_counter, stop_ev
 
 
 def start_search(params: Params, workers: int, result_queue, stats_counter, stop_event,
-                 engine_pref: str = "auto") -> Tuple[str, List]:
+                 engine_pref: str = "auto", gpu_limits: Tuple[str, ...] = ()) -> Tuple[str, List]:
     """Запускает перебор: GPU (metalvanity), если он есть и не выбран CPU, иначе
     Rust-движок, иначе Python-процессы. Находки кладутся в result_queue как
-    (address, salt). Возвращает имя движка и список запущенного (для остановки)."""
+    (address, salt). Возвращает имя движка и список запущенного (для остановки).
+    gpu_limits — флаги ограничения нагрузки для GPU-движка (--gpu-load / --max-speed)."""
     gpu = find_gpu_engine() if engine_pref != "cpu" else None
     if gpu:
-        return "metal", [_launch([gpu] + params.engine_args(), params, result_queue, stats_counter, stop_event)]
+        cmd = [gpu] + params.engine_args() + list(gpu_limits)
+        return "metal", [_launch(cmd, params, result_queue, stats_counter, stop_event)]
 
     engine = find_engine()
     if engine:

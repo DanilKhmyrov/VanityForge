@@ -1,0 +1,18 @@
+[package]
+name = "metalvanity-evm"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Prototype: EVM vanity address search on the Apple Silicon GPU (Metal)."
+
+[dependencies]
+metal = "0.29"
+objc = "0.2"
+rand = "0.8"
+secp256k1 = { version = "0.29", features = ["rand"] }
+tiny-keccak = { version = "2", features = ["keccak"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

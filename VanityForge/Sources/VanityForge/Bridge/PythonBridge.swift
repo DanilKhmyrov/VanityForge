@@ -41,8 +41,11 @@ final class PythonBridge {
 
     func start(networks: [String], preset: String, fakeFoundInterval: Double? = nil, workerCount: Int? = nil,
                customPattern: (text: String, mode: CustomPatternMode, caseSensitive: Bool)? = nil,
-               language: AppLanguage = .ru, words: [String]? = nil, splitKey: String? = nil) -> AsyncStream<BridgeEvent> {
-        var arguments = [networks.joined(separator: ","), preset, "--lang", language.rawValue]
+               language: AppLanguage = .ru, words: [String]? = nil, splitKey: String? = nil,
+               useGPU: Bool = true, gpuLoad: Int = 100) -> AsyncStream<BridgeEvent> {
+        var arguments = [networks.joined(separator: ","), preset, "--lang", language.rawValue,
+                         "--engine", useGPU ? "auto" : "cpu"]
+        if gpuLoad < 100 { arguments += ["--gpu-load", String(gpuLoad)] }
         if let interval = fakeFoundInterval {
             arguments += ["--fake-found", String(interval)]
         }
@@ -66,7 +69,7 @@ final class PythonBridge {
 
     /// Режим CREATE2: тот же протокол событий, другие аргументы (см. create2.py).
     func startCreate2(kind: ContractKind, factory: String, initCodeHash: String, caller: String, goal: Create2Goal,
-                      minBytes: Int, prefix: String, hookFlags: UInt16, useGPU: Bool, workerCount: Int?,
+                      minBytes: Int, prefix: String, hookFlags: UInt16, useGPU: Bool, gpuLoad: Int, workerCount: Int?,
                       language: AppLanguage) -> AsyncStream<BridgeEvent> {
         var arguments = [
             "--create2", "--kind", kind.rawValue, "--lang", language.rawValue,
@@ -75,6 +78,7 @@ final class PythonBridge {
             "--prefix", prefix, "--hook-flags", String(hookFlags, radix: 16),
             "--engine", useGPU ? "auto" : "cpu",
         ]
+        if gpuLoad < 100 { arguments += ["--gpu-load", String(gpuLoad)] }
         if !caller.isEmpty { arguments += ["--caller", caller] }
         if let workerCount { arguments += ["--workers", String(workerCount)] }
         return run(arguments: arguments, language: language)

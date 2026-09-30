@@ -12,6 +12,8 @@
 // Каждая находка GPU пересчитывается на CPU и сверяется с адресом, который
 // вернуло ядро; расхождение — ошибка, а не тихо выданный неверный salt.
 //
+// --gpu-load 1..100 и --max-speed <попыток/с> ограничивают нагрузку паузами между батчами.
+//
 // `metalvanity --self-test` гоняет оба режима с порогом «всё подходит» и сверяет
 // тысячи адресов GPU с CPU.
 
@@ -94,6 +96,8 @@ struct Config {
     var goal = Goal.leading(min: 1)
     var create3 = false
     var batchLog2 = 24
+    var gpuLoad = 1.0     // доля времени, которую GPU считает (0..1]
+    var maxSpeed = 0.0    // попыток в секунду, 0 — без ограничения
 }
 
 let createX: [UInt8] = hex("ba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed")!
@@ -159,6 +163,8 @@ func parseConfig(_ args: [String]) -> Config {
     default: fail("--goal must be one of: leading, zeros, prefix, hook")
     }
     if let batch = value("--batch-log2").flatMap(Int.init) { config.batchLog2 = min(max(batch, 10), 28) }
+    if let load = value("--gpu-load").flatMap(Double.init) { config.gpuLoad = min(max(load, 1), 100) / 100 }
+    if let speed = value("--max-speed").flatMap(Double.init) { config.maxSpeed = max(speed, 0) }
     return config
 }
 
@@ -355,17 +361,9 @@ func search(_ config: Config) -> Never {
     var checked: UInt64 = 0
     var lastStats = Date()
     var nextBase = UInt64.random(in: 0...(UInt64.max / 2))
-    miner.submit(slot: 0, base: nextBase, threads: batch, threshold: Int32(best))
-    nextBase &+= UInt64(batch)
-    var current = 0
 
-    while true {
-        // Пока GPU считает текущий батч, следующий уже в очереди — видеокарта не простаивает.
-        let other = 1 - current
-        miner.submit(slot: other, base: nextBase, threads: batch, threshold: Int32(best))
-        nextBase &+= UInt64(batch)
-
-        for hit in miner.collect(slot: current) where hit.score > best {
+    func process(_ hits: [Miner.Hit]) {
+        for hit in hits where hit.score > best {
             let salt = saltFor(config, head: miner.head, counter: hit.counter)
             let cpuAddress = address(config, salt: salt)
             guard cpuAddress == hit.address, let cpuScore = score(config.goal, cpuAddress) else {
@@ -381,6 +379,34 @@ func search(_ config: Config) -> Never {
             print("{\"type\":\"stats\",\"checked\":\(checked)}")
             lastStats = Date()
         }
+    }
+
+    if config.gpuLoad < 1 || config.maxSpeed > 0 {
+        // С ограничением — по одному батчу с паузой: доля работы не выше gpuLoad,
+        // средняя скорость не выше maxSpeed.
+        while true {
+            let started = Date()
+            miner.submit(slot: 0, base: nextBase, threads: batch, threshold: Int32(best))
+            nextBase &+= UInt64(batch)
+            let hits = miner.collect(slot: 0)
+            let busy = Date().timeIntervalSince(started)
+            process(hits)
+            let byLoad = busy * (1 / config.gpuLoad - 1)
+            let bySpeed = config.maxSpeed > 0 ? Double(batch) / config.maxSpeed - busy : 0
+            let pause = max(byLoad, bySpeed, 0)
+            if pause > 0 { Thread.sleep(forTimeInterval: pause) }
+        }
+    }
+
+    miner.submit(slot: 0, base: nextBase, threads: batch, threshold: Int32(best))
+    nextBase &+= UInt64(batch)
+    var current = 0
+    while true {
+        // Пока GPU считает текущий батч, следующий уже в очереди — видеокарта не простаивает.
+        let other = 1 - current
+        miner.submit(slot: other, base: nextBase, threads: batch, threshold: Int32(best))
+        nextBase &+= UInt64(batch)
+        process(miner.collect(slot: current))
         current = other
     }
 }

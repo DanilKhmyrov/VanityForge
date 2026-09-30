@@ -19,10 +19,18 @@ if command -v cargo >/dev/null 2>&1; then
     echo "==> Building ethvanity accelerator"
     (cd "$REPO_ROOT/ethvanity" && cargo build --release)
     ETHVANITY_BIN="$REPO_ROOT/ethvanity/target/release/ethvanity"
+    echo "==> Building metalvanity-evm (GPU-перебор EVM-кошельков)"
+    if (cd "$REPO_ROOT/metalvanity/evm" && cargo build --release); then
+        METAL_EVM_BIN="$REPO_ROOT/metalvanity/evm/target/release/metalvanity-evm"
+    else
+        echo "    сборка metalvanity-evm не удалась — кошельки будут считаться на CPU"
+        METAL_EVM_BIN=""
+    fi
 else
     echo "==> cargo не найден — пропускаю сборку ethvanity (приложение всё равно"
     echo "    работает, просто без ускорения ETH-поиска, если не установлен keyhunt)"
     ETHVANITY_BIN=""
+    METAL_EVM_BIN=""
 fi
 
 echo "==> Building metalvanity (GPU-перебор CREATE2/CREATE3)"
@@ -71,6 +79,9 @@ if [ -n "$ETHVANITY_BIN" ] && [ -x "$ETHVANITY_BIN" ]; then
 fi
 if [ -n "$METALVANITY_BIN" ] && [ -x "$METALVANITY_BIN" ]; then
     cp "$METALVANITY_BIN" "$PY_RUNTIME_DEST/metalvanity"
+fi
+if [ -n "$METAL_EVM_BIN" ] && [ -x "$METAL_EVM_BIN" ]; then
+    cp "$METAL_EVM_BIN" "$PY_RUNTIME_DEST/metalvanity-evm"
 fi
 
 touch "$APP"

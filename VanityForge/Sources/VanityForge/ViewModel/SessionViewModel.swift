@@ -92,7 +92,11 @@ final class SessionViewModel {
     var create2MinBytes: Int = 4
     var create2Prefix: String = ""
     var create2HookFlags: UInt16 = 0
-    var create2UseGPU: Bool = true
+    /// GPU (Metal) для EVM-кошельков и контрактов; выключается, если видеокарта нужна под другое.
+    var useGPU: Bool = true
+    /// Потолок нагрузки на видеокарту, % (паузы между пачками): меньше — тише и холоднее.
+    var gpuLoad: Int = 100
+    static let gpuLoadSteps = [25, 50, 75, 100]
 
     var create2FactoryAddress: String {
         create2Factory.address ?? create2CustomFactory.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -224,6 +228,7 @@ final class SessionViewModel {
 
     var isRunning: Bool { phase != .idle }
 
+
     var orderedNetworks: [String] { catalog.networkOrder.filter { selectedNetworks.contains($0) } }
 
     /// Ключ цвета для фона/кнопок: у режима контрактов свой акцент.
@@ -290,7 +295,8 @@ final class SessionViewModel {
         var create2MinBytes: Int?
         var create2Prefix: String?
         var create2HookFlags: UInt16?
-        var create2UseGPU: Bool?
+        var useGPU: Bool?
+        var gpuLoad: Int?
         var lastMeasuredCreate2Speed: Double?
         var lastMeasuredCreate3Speed: Double?
     }
@@ -329,7 +335,8 @@ final class SessionViewModel {
             create2MinBytes: create2MinBytes,
             create2Prefix: create2Prefix,
             create2HookFlags: create2HookFlags,
-            create2UseGPU: create2UseGPU,
+            useGPU: useGPU,
+            gpuLoad: gpuLoad,
             lastMeasuredCreate2Speed: lastMeasuredCreate2Speed,
             lastMeasuredCreate3Speed: lastMeasuredCreate3Speed
         )
@@ -366,7 +373,8 @@ final class SessionViewModel {
         if let minBytes = settings.create2MinBytes { create2MinBytes = min(max(minBytes, 1), Create2Math.addressBytes) }
         create2Prefix = settings.create2Prefix ?? ""
         create2HookFlags = settings.create2HookFlags ?? 0
-        create2UseGPU = settings.create2UseGPU ?? true
+        useGPU = settings.useGPU ?? true
+        if let load = settings.gpuLoad, Self.gpuLoadSteps.contains(load) { gpuLoad = load }
         lastMeasuredCreate2Speed = settings.lastMeasuredCreate2Speed
         lastMeasuredCreate3Speed = settings.lastMeasuredCreate3Speed
     }
@@ -391,7 +399,7 @@ final class SessionViewModel {
             let stream = bridge.startCreate2(
                 kind: contractKind, factory: create2FactoryAddress, initCodeHash: create2InitCodeHash.trimmingCharacters(in: .whitespacesAndNewlines),
                 caller: create2CallerTrimmed, goal: create2Goal, minBytes: create2MinBytes,
-                prefix: Create2Math.strip(create2Prefix), hookFlags: create2HookFlags, useGPU: create2UseGPU,
+                prefix: Create2Math.strip(create2Prefix), hookFlags: create2HookFlags, useGPU: useGPU, gpuLoad: gpuLoad,
                 workerCount: workerCount, language: language
             )
             consume(stream)
@@ -407,7 +415,7 @@ final class SessionViewModel {
         let stream = bridge.start(
             networks: networks, preset: preset, fakeFoundInterval: fake,
             workerCount: workerCount, customPattern: customPattern, language: language, words: words,
-            splitKey: splitKeyEnabled ? splitKeyTrimmed : nil
+            splitKey: splitKeyEnabled ? splitKeyTrimmed : nil, useGPU: useGPU, gpuLoad: gpuLoad
         )
         consume(stream)
     }
