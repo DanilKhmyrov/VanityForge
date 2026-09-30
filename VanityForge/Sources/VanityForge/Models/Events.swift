@@ -65,8 +65,17 @@ struct FoundEvent: Codable, Hashable, Identifiable {
     let foundWords: [String]
     let filepath: String
     let foundAt: String
+    /// Только для режима CREATE2: вместо приватного ключа — salt и параметры
+    /// развёртывания, которые нужно отдать заказчику.
+    let salt: String?
+    let factory: String?
+    let initCodeHash: String?
+    let caller: String?
+    let leadingZeroBytes: Int?
+    let zeroBytes: Int?
 
     var id: Int { seq }
+    var isContract: Bool { salt != nil }
 
     enum CodingKeys: String, CodingKey {
         case seq
@@ -81,6 +90,12 @@ struct FoundEvent: Codable, Hashable, Identifiable {
         case foundWords = "found_words"
         case filepath
         case foundAt = "found_at"
+        case salt
+        case factory
+        case initCodeHash = "init_code_hash"
+        case caller
+        case leadingZeroBytes = "leading_zero_bytes"
+        case zeroBytes = "zero_bytes"
     }
 }
 

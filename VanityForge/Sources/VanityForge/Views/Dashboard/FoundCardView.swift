@@ -9,6 +9,8 @@ struct FoundCardView: View {
     @State private var addressCopied = false
     @State private var checksumCopied = false
     @State private var keyCopied = false
+    @State private var saltCopied = false
+    @State private var clientCopied = false
     /// Свежая находка на секунду-другую "вспыхивает" рамкой/свечением —
     /// приятная обратная связь в духе "поймали", затем гаснет до обычного вида.
     @State private var justArrived = true
@@ -27,11 +29,15 @@ struct FoundCardView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 topRow
-                addressRow
-                if let checksum = event.checksumAddress { checksumRow(checksum) }
-                if !event.matchedDesc.isEmpty || !event.foundWords.isEmpty { badgeRow }
-                if event.network == "eth" { balanceRow }
-                privateKeyRow
+                if event.isContract {
+                    contractRows
+                } else {
+                    addressRow
+                    if let checksum = event.checksumAddress { checksumRow(checksum) }
+                    if !event.matchedDesc.isEmpty || !event.foundWords.isEmpty { badgeRow }
+                    if event.network == "eth" { balanceRow }
+                    privateKeyRow
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
@@ -177,6 +183,106 @@ struct FoundCardView: View {
                 }
             Spacer(minLength: 4)
             CopyButton(copied: $keyCopied) { copy(event.privateKey) }
+        }
+    }
+
+    @ViewBuilder
+    private var contractRows: some View {
+        let address = event.checksumAddress ?? event.address
+        HStack(spacing: 8) {
+            Text(address)
+                .font(.system(size: 13, design: .monospaced))
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            CopyButton(copied: $addressCopied) { copy(address) }
+        }
+
+        HStack(spacing: 6) {
+            if let leading = event.leadingZeroBytes {
+                badge("\(session.t(.create2LeadingZeroBytes))\(leading)", color: .yellow)
+            }
+            if let zeros = event.zeroBytes {
+                badge("\(session.t(.create2ZeroBytes))\(zeros)", color: .orange)
+            }
+            ForEach(event.matchedDesc, id: \.self) { desc in
+                badge(desc, color: .white)
+            }
+            Spacer()
+            Button { revealInFinder() } label: { Image(systemName: "folder").font(.system(size: 11)) }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tertiary)
+                .help(session.t(.revealInFinder))
+        }
+
+        if let salt = event.salt {
+            HStack(spacing: 8) {
+                label(session.t(.create2Salt))
+                Text(salt)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                CopyButton(copied: $saltCopied) { copy(salt) }
+            }
+        }
+
+        HStack(spacing: 14) {
+            if let factory = event.factory { smallField(session.t(.create2Factory), factory) }
+            if let caller = event.caller { smallField(session.t(.create2Deployer), caller) }
+            Spacer(minLength: 0)
+        }
+
+        Button {
+            copy(clientSummary)
+            clientCopied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { clientCopied = false }
+        } label: {
+            Label(session.t(.create2CopyForClient), systemImage: clientCopied ? "checkmark" : "paperplane.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(Capsule().fill(accent.opacity(0.18)))
+                .foregroundStyle(clientCopied ? Color.green : accent)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var clientSummary: String {
+        [
+            "Contract address: \(event.checksumAddress ?? event.address)",
+            "Salt:             \(event.salt ?? "")",
+            "Factory:          \(event.factory ?? "")",
+            "Deployer wallet:  \(event.caller ?? "")",
+            "Init code hash:   \(event.initCodeHash ?? "")",
+        ].joined(separator: "\n")
+    }
+
+    private func badge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.12)))
+            .foregroundStyle(color == .white ? Color.secondary : color)
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.tertiary)
+    }
+
+    private func smallField(_ title: String, _ value: String) -> some View {
+        HStack(spacing: 5) {
+            label(title)
+            Text(value)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
     }
 

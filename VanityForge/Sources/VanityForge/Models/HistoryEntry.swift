@@ -7,6 +7,8 @@ struct HistoryEntry: Identifiable, Hashable {
     let presetFolder: String
     let address: String
     let privateKey: String
+    /// Для находок CREATE2: salt (не секретный) вместо приватного ключа.
+    let salt: String?
     let conditions: String
     let foundAt: String
     let fileURL: URL
@@ -20,13 +22,14 @@ struct HistoryEntry: Identifiable, Hashable {
             let value = line[line.index(after: colonIndex)...].trimmingCharacters(in: .whitespaces)
             fields[key] = value
         }
-        guard let address = fields["Address"], let privateKey = fields["Private"] else { return nil }
+        guard let address = fields["Address"], fields["Private"] != nil || fields["Salt"] != nil else { return nil }
         return HistoryEntry(
             network: network,
             networkFull: fields["Network"] ?? network,
             presetFolder: presetFolder,
             address: address,
-            privateKey: privateKey,
+            privateKey: fields["Private"] ?? "",
+            salt: fields["Salt"],
             conditions: fields["Conditions"] ?? "",
             foundAt: fields["Found"] ?? "",
             fileURL: fileURL
@@ -52,6 +55,7 @@ struct HistoryNetworkGroup: Identifiable {
 enum HistoryLoader {
     static let networkFullNames: [String: String] = [
         "sol": "Solana", "eth": "EVM (ETH, BSC, Polygon)", "trx": "Tron", "ton": "TON",
+        "create2": "CREATE2",
     ]
 
     private static func isDirectory(_ url: URL) -> Bool {

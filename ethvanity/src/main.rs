@@ -30,6 +30,8 @@ use std::thread;
 use std::time::Duration;
 use tiny_keccak::{Hasher, Keccak};
 
+mod create2;
+
 struct Args {
     prefixes: Vec<Vec<u8>>, // каждый префикс — последовательность полубайтов (0..=15)
     threads: usize,
@@ -115,6 +117,11 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn main() {
+    if env::args().any(|a| a == "--create2") {
+        create2::run();
+        return;
+    }
+
     let args = parse_args();
     if args.prefixes.is_empty() {
         eprintln!("usage: ethvanity --prefix <hex> [--prefix <hex> ...] [--threads N]");

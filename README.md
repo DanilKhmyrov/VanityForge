@@ -14,6 +14,7 @@ A generator for "vanity" crypto addresses: **Solana**, **EVM (ETH, BSC, Polygon,
 - Rarity indicator and estimated time-to-find for every condition
 - EVM search acceleration kicks in automatically, nothing to install separately (details below)
 - Full find history, organized by network and condition
+- Contracts mode: mining a CREATE2 salt for a smart-contract address (details below)
 
 ## Installation
 
@@ -51,6 +52,26 @@ Vanity address search is bottlenecked by how fast you can try keys. For EVM netw
 2. **[`ethvanity`](ethvanity)** (GPL-3.0, source included right in this repo) — a Rust accelerator written specifically for this project. Instead of a full elliptic-curve point multiplication per candidate (as in naive generation), it derives the next address via point addition — `P(k+1) = P(k) + G` — through the safe, audited API of the `secp256k1` crate, plus prefix comparison works on raw nibbles instead of formatting every candidate as a hex string. That's roughly a 7x speedup over naive Python/coincurve generation. It's built automatically by `make_app.sh`/`make_dmg.sh` and bundled inside the `.app` — works for everyone out of the box, no manual step required.
 
 If neither is available (or for the other networks, which don't have a GPU/ethvanity mode), the app falls back to regular multi-process Python generation.
+
+## Contracts mode (CREATE2)
+
+Mining a smart-contract address for a client. A contract deployed via `CREATE2` lands at `keccak256(0xff ++ factory ++ salt ++ keccak256(code))[12:]`. The client provides the factory and the code hash; VanityForge iterates the `salt`. No private keys are involved: the result is a salt, which isn't secret and can be handed to the client as is.
+
+What you can search for:
+- **leading zeros** (`0x00000000…`) — cheaper on every call and looks serious;
+- **zeros anywhere** — a zero byte in calldata costs 4 gas instead of 16;
+- **prefix** — `0xdead…`, `0xcafe…`, a project name in hex;
+- **Uniswap v4 hook** — hook permissions live in the lowest 14 bits of the address, a hook can't be deployed without a matching one.
+
+The first 20 bytes of the salt are the client's wallet: `ImmutableCreate2Factory` checks that it matches `msg.sender`, so the salt is useless to anyone else and can't be front-run at deployment. The search reports records: every next find beats the previous one (more zeros).
+
+The search runs in the `ethvanity` Rust engine (one keccak per attempt, ~30M attempts/s on an M4). Without it, a slow Python fallback is used. CLI version:
+
+```bash
+python3 create2.py --init-code-hash 0x… --caller 0x… --goal leading --min 4
+```
+
+`--factory` is `immutable` (default), `arachnid` (Deterministic Deployment Proxy, used by Foundry) or any address; `--goal` is `leading`, `zeros`, `prefix` (with `--prefix dead`) or `hook` (with `--hook-flags 00C0`). Finds are saved to `results/create2/`.
 
 ## CLI version (no app)
 

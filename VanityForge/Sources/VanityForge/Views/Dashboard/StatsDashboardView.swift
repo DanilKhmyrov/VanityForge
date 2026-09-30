@@ -8,7 +8,7 @@ struct StatsDashboardView: View {
             statusHeader
 
             HStack(spacing: 12) {
-                StatTile(title: session.t(.statSpeed), value: speedText, unit: session.t(.unitAddrPerSec), icon: "bolt.fill", accent: accentColor)
+                StatTile(title: session.t(.statSpeed), value: speedText, unit: session.t(session.searchMode == .contracts ? .unitAttemptsPerSec : .unitAddrPerSec), icon: "bolt.fill", accent: accentColor)
                 StatTile(title: session.t(.statChecked), value: totalText, unit: session.t(.unitAddresses), icon: "magnifyingglass", accent: accentColor)
                 StatTile(title: session.t(.statTime), value: Format.elapsed(session.stats?.elapsedSeconds ?? 0), unit: nil, icon: "clock.fill", accent: accentColor)
                 StatTile(title: session.t(.statWorkers), value: "\(session.stats?.workersTotal ?? session.started?.workersTotal ?? 0)", unit: session.t(.unitProcesses), icon: "cpu.fill", accent: accentColor)
@@ -30,7 +30,7 @@ struct StatsDashboardView: View {
     }
 
     private var accentColor: Color {
-        session.orderedNetworks.first.map(NetworkVisual.accent(for:)) ?? .accentColor
+        session.accentKey.map(NetworkVisual.accent(for:)) ?? .accentColor
     }
 
     @ViewBuilder

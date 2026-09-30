@@ -8,28 +8,40 @@ struct NetworkPresetPicker: View {
         VStack(alignment: .leading, spacing: 22) {
             header
 
-            section(session.t(.sectionNetworks)) {
-                VStack(spacing: 8) {
-                    ForEach(catalog.networkOrder, id: \.self) { key in
-                        NetworkChip(
-                            key: key,
-                            name: catalog.networkNames[key] ?? key,
-                            isSelected: session.selectedNetworks.contains(key),
-                            disabled: session.isRunning
-                        ) {
-                            session.toggleNetwork(key)
+            SearchModeSwitcher()
+
+            if session.searchMode == .wallets {
+                section(session.t(.sectionNetworks)) {
+                    VStack(spacing: 8) {
+                        ForEach(catalog.networkOrder, id: \.self) { key in
+                            NetworkChip(
+                                key: key,
+                                name: catalog.networkNames[key] ?? key,
+                                isSelected: session.selectedNetworks.contains(key),
+                                disabled: session.isRunning
+                            ) {
+                                session.toggleNetwork(key)
+                            }
                         }
                     }
                 }
+
+                section(session.t(.sectionCondition)) {
+                    ConditionDropdown()
+                }
+
+                workerControl
+
+                demoToggle
+            } else {
+                ScrollView {
+                    Create2Form()
+                        .padding(.trailing, 4)
+                }
+                .scrollIndicators(.never)
+
+                workerControl
             }
-
-            section(session.t(.sectionCondition)) {
-                ConditionDropdown()
-            }
-
-            workerControl
-
-            demoToggle
 
             Spacer(minLength: 0)
 
@@ -665,6 +677,37 @@ private struct AlphabetHintButton: View {
     }
 }
 
+private struct SearchModeSwitcher: View {
+    @Environment(SessionViewModel.self) private var session
+    @Namespace private var pill
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(SearchMode.allCases) { mode in
+                Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { session.searchMode = mode }
+                } label: {
+                    Label(mode.label(session.language), systemImage: mode == .wallets ? "key.fill" : "doc.text.fill")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity)
+                        .background {
+                            if session.searchMode == mode {
+                                Capsule().fill(Color.white.opacity(0.13))
+                                    .matchedGeometryEffect(id: "mode-pill", in: pill)
+                            }
+                        }
+                        .foregroundStyle(session.searchMode == mode ? .primary : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(Capsule().fill(Color.white.opacity(0.04)).overlay(Capsule().strokeBorder(Color.white.opacity(0.07), lineWidth: 1)))
+        .disabled(session.isRunning)
+    }
+}
+
 private struct LanguageSwitcher: View {
     @Environment(SessionViewModel.self) private var session
 
@@ -691,9 +734,22 @@ private struct LanguageSwitcher: View {
 
 private struct StartStopButton: View {
     @Environment(SessionViewModel.self) private var session
-    @State private var pulse = false
 
     var body: some View {
+        // Пульс только пока идёт поиск: TimelineView останавливается вместе с
+        // ним, в отличие от repeatForever, запущенного из onAppear (тот крутит
+        // анимацию всё время жизни view, даже когда кнопка неподвижна).
+        if session.phase == .running {
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                button(pulse: sin(t * 2.8) * 0.5 + 0.5)
+            }
+        } else {
+            button(pulse: 0)
+        }
+    }
+
+    private func button(pulse: Double) -> some View {
         Button {
             if session.isRunning { session.stop() } else { session.start() }
         } label: {
@@ -718,23 +774,13 @@ private struct StartStopButton: View {
             )
             .overlay(
                 Capsule()
-                    .strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
+                    .strokeBorder(Color.white.opacity(0.35 + pulse * 0.25), lineWidth: 1)
             )
-            .overlay(
-                Capsule()
-                    .strokeBorder(Color.white.opacity(pulse && session.phase == .running ? 0.5 : 0), lineWidth: 2)
-                    .scaleEffect(pulse && session.phase == .running ? 1.06 : 1)
-            )
-            .shadow(color: buttonShadowColor.opacity(0.5), radius: 16, y: 6)
+            .shadow(color: buttonShadowColor.opacity(0.45 + pulse * 0.3), radius: 14 + pulse * 8, y: 6)
         }
         .buttonStyle(.plain)
         .keyboardShortcut(.return, modifiers: .command)
         .disabled((!session.canStart && !session.isRunning) || session.phase == .stopping)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                pulse = true
-            }
-        }
     }
 
     private var label: String {
@@ -746,13 +792,12 @@ private struct StartStopButton: View {
     }
 
     private var buttonShadowColor: Color {
-        session.isRunning ? .red : (session.orderedNetworks.first.map(NetworkVisual.accent(for:)) ?? .accentColor)
+        session.isRunning ? .red : (session.accentKey.map(NetworkVisual.accent(for:)) ?? .accentColor)
     }
 
     private var accentGradient: LinearGradient {
-        let keys = session.orderedNetworks
-        if let first = keys.first {
-            return NetworkVisual.gradient(for: first)
+        if let key = session.accentKey {
+            return NetworkVisual.gradient(for: key)
         }
         return LinearGradient(colors: [.gray, .gray.opacity(0.6)], startPoint: .leading, endPoint: .trailing)
     }

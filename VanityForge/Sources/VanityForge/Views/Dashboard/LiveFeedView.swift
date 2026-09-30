@@ -27,8 +27,8 @@ struct LiveFeedView: View {
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-            FloatingIcon()
-            Text(session.isRunning ? session.t(.liveFeedRunning) : session.t(.liveFeedIdle))
+            FloatingIcon(active: session.isRunning)
+            Text(session.isRunning ? session.t(.liveFeedRunning) : session.t(session.searchMode == .contracts ? .liveFeedIdleContracts : .liveFeedIdle))
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -37,16 +37,26 @@ struct LiveFeedView: View {
     }
 }
 
+/// Парит только во время поиска: бесконечная repeatForever-анимация из
+/// onAppear перерисовывала окно 60 раз в секунду и в простое (10–20% CPU).
 private struct FloatingIcon: View {
-    @State private var floating = false
+    let active: Bool
 
     var body: some View {
+        if active {
+            TimelineView(.animation) { timeline in
+                icon(offset: sin(timeline.date.timeIntervalSinceReferenceDate * .pi / 1.8) * 5)
+            }
+        } else {
+            icon(offset: 0)
+        }
+    }
+
+    private func icon(offset: Double) -> some View {
         Image(systemName: "sparkles")
             .font(.system(size: 30))
             .foregroundStyle(.tertiary)
             .shadow(color: .white.opacity(0.15), radius: 10)
-            .offset(y: floating ? -5 : 5)
-            .animation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true), value: floating)
-            .onAppear { floating = true }
+            .offset(y: offset)
     }
 }

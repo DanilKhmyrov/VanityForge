@@ -104,6 +104,7 @@ enum L: String {
     // MARK: LiveFeedView
     case liveFeedRunning
     case liveFeedIdle
+    case liveFeedIdleContracts
 
     // MARK: FoundCardView
     case revealInFinder
@@ -112,6 +113,41 @@ enum L: String {
 
     // MARK: PythonBridge
     case processLaunchFailed
+
+    // MARK: CREATE2
+    case modeWallets
+    case modeContracts
+    case sectionFactory
+    case sectionContract
+    case sectionTarget
+    case create2FactoryCustom
+    case create2FactoryPlaceholder
+    case create2InitCodeHash
+    case create2InitCodeHashHelp
+    case create2Caller
+    case create2CallerHelp
+    case create2CallerMissing
+    case create2FactoryUnprotected
+    case create2InvalidHex
+    case create2GoalLeading
+    case create2GoalZeros
+    case create2GoalPrefix
+    case create2GoalHook
+    case create2HintLeading
+    case create2HintZeros
+    case create2HintPrefix
+    case create2HintHook
+    case create2MinBytes
+    case create2PrefixPlaceholder
+    case create2HookMask
+    case create2Explain
+    case create2Salt
+    case create2Factory
+    case create2Deployer
+    case create2CopyForClient
+    case create2ZeroBytes
+    case create2LeadingZeroBytes
+    case unitAttemptsPerSec
 
     func s(_ lang: AppLanguage) -> String {
         Self.table[self]?[lang] ?? rawValue
@@ -199,6 +235,7 @@ enum L: String {
         .historyEmpty: [.ru: "Пока ничего не найдено — история появится после первых находок", .en: "Nothing found yet — history will appear after the first finds"],
 
         .liveFeedRunning: [.ru: "Ищем адрес — находки появятся здесь", .en: "Searching — finds will appear here"],
+        .liveFeedIdleContracts: [.ru: "Вставьте хеш кода и кошелёк заказчика, выберите условие и нажмите «Начать поиск»", .en: "Paste the code hash and the client's wallet, pick a condition, then click \u{201c}Start search\u{201d}"],
         .liveFeedIdle: [.ru: "Выберите сети и условие, затем нажмите «Начать поиск»", .en: "Select networks and a condition, then click \u{201c}Start search\u{201d}"],
 
         .revealInFinder: [.ru: "Показать в Finder", .en: "Show in Finder"],
@@ -206,5 +243,39 @@ enum L: String {
         .holdToRevealKey: [.ru: "удерживайте, чтобы показать приватный ключ", .en: "hold to reveal the private key"],
 
         .processLaunchFailed: [.ru: "Не удалось запустить процесс: ", .en: "Failed to launch process: "],
+
+        .modeWallets: [.ru: "Кошельки", .en: "Wallets"],
+        .modeContracts: [.ru: "Контракты", .en: "Contracts"],
+        .sectionFactory: [.ru: "Фабрика CREATE2", .en: "CREATE2 factory"],
+        .sectionContract: [.ru: "Контракт заказчика", .en: "Client's contract"],
+        .sectionTarget: [.ru: "Какой адрес ищем", .en: "Target address"],
+        .create2FactoryCustom: [.ru: "Своя фабрика…", .en: "Custom factory…"],
+        .create2FactoryPlaceholder: [.ru: "адрес фабрики 0x…", .en: "factory address 0x…"],
+        .create2InitCodeHash: [.ru: "хеш кода: keccak256(init code), 0x…", .en: "code hash: keccak256(init code), 0x…"],
+        .create2InitCodeHashHelp: [.ru: "Даёт заказчик. Любое изменение кода или параметров конструктора меняет хеш — и адрес. Майнить только под финальный код.", .en: "Provided by the client. Any change to the code or constructor arguments changes the hash — and the address. Mine only for final code."],
+        .create2Caller: [.ru: "кошелёк заказчика 0x…", .en: "client's wallet 0x…"],
+        .create2CallerHelp: [.ru: "Вписывается в первые 20 байт salt: этот salt сможет использовать только этот кошелёк.", .en: "Goes into the first 20 bytes of the salt: only this wallet will be able to use it."],
+        .create2CallerMissing: [.ru: "Без кошелька заказчика salt сможет использовать кто угодно", .en: "Without the client's wallet anyone can use the salt"],
+        .create2FactoryUnprotected: [.ru: "Эта фабрика не проверяет кошелёк в salt — найденный адрес могут перехватить при развёртывании", .en: "This factory doesn't check the wallet in the salt — the address can be front-run at deployment"],
+        .create2InvalidHex: [.ru: "неверный hex", .en: "invalid hex"],
+        .create2GoalLeading: [.ru: "Нули в начале", .en: "Leading zeros"],
+        .create2GoalZeros: [.ru: "Нули где угодно", .en: "Zeros anywhere"],
+        .create2GoalPrefix: [.ru: "Префикс", .en: "Prefix"],
+        .create2GoalHook: [.ru: "Uniswap v4 hook", .en: "Uniswap v4 hook"],
+        .create2HintLeading: [.ru: "0x0000…: экономит газ на каждом вызове и выглядит солидно. Показываем каждый новый рекорд.", .en: "0x0000…: saves gas on every call and looks serious. Every new record is shown."],
+        .create2HintZeros: [.ru: "Нулевой байт в calldata стоит 4 газа вместо 16 — важен каждый ноль, где бы он ни был. Показываем каждый новый рекорд.", .en: "A zero byte in calldata costs 4 gas instead of 16 — every zero counts, wherever it is. Every new record is shown."],
+        .create2HintPrefix: [.ru: "Красивое начало адреса: dead, cafe, название проекта в hex. Первое совпадение, дальше только варианты с бо́льшим числом нулей.", .en: "A nice address start: dead, cafe, a project name in hex. First match, then only variants with more zero bytes."],
+        .create2HintHook: [.ru: "В v4 права хука зашиты в младшие 14 бит адреса. Отметьте ровно те, что реализует контракт. Первое совпадение, дальше только варианты с бо́льшим числом нулей.", .en: "In v4 hook permissions live in the lowest 14 bits of the address. Tick exactly the ones the contract implements. First match, then only variants with more zero bytes."],
+        .create2MinBytes: [.ru: "Минимум нулевых байт", .en: "Minimum zero bytes"],
+        .create2PrefixPlaceholder: [.ru: "например dead", .en: "e.g. dead"],
+        .create2HookMask: [.ru: "маска", .en: "mask"],
+        .create2Explain: [.ru: "Адрес контракта = keccak256(0xff, фабрика, salt, хеш кода). Фабрику и хеш даёт заказчик, мы перебираем salt. Ключей нет: salt не секретный, его можно спокойно отдать заказчику.", .en: "Contract address = keccak256(0xff, factory, salt, code hash). The client provides the factory and hash; we iterate the salt. No keys involved: the salt isn't secret and can be handed to the client."],
+        .create2Salt: [.ru: "salt", .en: "salt"],
+        .create2Factory: [.ru: "фабрика", .en: "factory"],
+        .create2Deployer: [.ru: "кошелёк", .en: "wallet"],
+        .create2CopyForClient: [.ru: "Скопировать для заказчика", .en: "Copy for the client"],
+        .create2ZeroBytes: [.ru: "нулевых байт: ", .en: "zero bytes: "],
+        .create2LeadingZeroBytes: [.ru: "в начале: ", .en: "leading: "],
+        .unitAttemptsPerSec: [.ru: "попыток/с", .en: "tries/s"],
     ]
 }

@@ -5,7 +5,7 @@ struct SpeedChartView: View {
     @Environment(SessionViewModel.self) private var session
 
     private var accent: Color {
-        session.orderedNetworks.first.map(NetworkVisual.accent(for:)) ?? .accentColor
+        session.accentKey.map(NetworkVisual.accent(for:)) ?? .accentColor
     }
 
     var body: some View {

@@ -56,6 +56,9 @@ final class SessionViewModel {
     func t(_ key: L) -> String { key.s(language) }
 
     var phase: Phase = .idle
+    var searchMode: SearchMode = .wallets {
+        didSet { if searchMode != oldValue { saveSettings() } }
+    }
     var selectedNetworks: Set<String> = ["eth"]
     var selectedPreset: String = "all"
     var fakeMode: Bool = false
@@ -64,6 +67,32 @@ final class SessionViewModel {
     var customPatternText: String = ""
     var customPatternMode: CustomPatternMode = .prefix
     var customPatternCaseSensitive: Bool = false
+
+    var create2Factory: Create2Factory = .immutable
+    var create2CustomFactory: String = ""
+    var create2InitCodeHash: String = ""
+    var create2Caller: String = ""
+    var create2Goal: Create2Goal = .leading
+    var create2MinBytes: Int = 4
+    var create2Prefix: String = ""
+    var create2HookFlags: UInt16 = 0
+
+    var create2FactoryAddress: String {
+        create2Factory.address ?? create2CustomFactory.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var create2FactoryValid: Bool { Create2Math.isHex(create2FactoryAddress, bytes: 20) }
+    var create2InitCodeHashValid: Bool { Create2Math.isHex(create2InitCodeHash, bytes: 32) }
+    var create2CallerTrimmed: String { create2Caller.trimmingCharacters(in: .whitespacesAndNewlines) }
+    var create2CallerValid: Bool { create2CallerTrimmed.isEmpty || Create2Math.isHex(create2CallerTrimmed, bytes: 20) }
+    var create2PrefixValid: Bool {
+        let body = Create2Math.strip(create2Prefix)
+        return !body.isEmpty && body.count <= 40 && body.allSatisfy(\.isHexDigit)
+    }
+
+    var create2Rarity: UInt64? {
+        Create2Math.rarity(goal: create2Goal, minBytes: create2MinBytes, prefix: create2Prefix)
+    }
 
     /// Слова, которые реально участвуют в поиске условия "word" — объединение
     /// дефолтных (из patterns.py) и своих (customWords), минус снятые галочки.
@@ -109,11 +138,15 @@ final class SessionViewModel {
     /// нахождения ("1 : N" → "≈ столько-то времени"), сохраняется между
     /// запусками приложения.
     var lastMeasuredSpeed: Double?
+    /// Перебор salt для CREATE2 в разы быстрее перебора ключей — его скорость
+    /// меряется и хранится отдельно, иначе оценки времени врали бы в обе стороны.
+    var lastMeasuredCreate2Speed: Double?
     var speedEstimateAuto: Bool = true
     var manualSpeedText: String = ""
 
     var assumedSpeed: Double? {
-        if speedEstimateAuto, let last = lastMeasuredSpeed, last > 0 { return last }
+        let last = searchMode == .contracts ? lastMeasuredCreate2Speed : lastMeasuredSpeed
+        if speedEstimateAuto, let last, last > 0 { return last }
         let cleaned = manualSpeedText.filter { $0.isNumber || $0 == "." }
         guard let value = Double(cleaned), value > 0 else { return nil }
         return value
@@ -170,6 +203,9 @@ final class SessionViewModel {
 
     var orderedNetworks: [String] { catalog.networkOrder.filter { selectedNetworks.contains($0) } }
 
+    /// Ключ цвета для фона/кнопок: у режима контрактов свой акцент.
+    var accentKey: String? { searchMode == .contracts ? "create2" : orderedNetworks.first }
+
     var availablePresets: [PresetItem] { catalog.presetOptions(for: selectedNetworks) }
 
     var isCustomPreset: Bool { selectedPreset == Self.customPresetKey }
@@ -179,6 +215,11 @@ final class SessionViewModel {
     }
 
     var canStart: Bool {
+        if searchMode == .contracts {
+            guard create2FactoryValid, create2InitCodeHashValid, create2CallerValid else { return false }
+            if create2Goal == .prefix { return create2PrefixValid }
+            return true
+        }
         guard !selectedNetworks.isEmpty else { return false }
         if isCustomPreset { return !trimmedCustomPattern.isEmpty }
         if selectedPreset == "word" { return !selectedWords.isEmpty }
@@ -212,11 +253,27 @@ final class SessionViewModel {
         var language: String?
         var selectedWords: [String]?
         var customWords: [String]?
+        var searchMode: String?
+        var create2Factory: String?
+        var create2CustomFactory: String?
+        var create2InitCodeHash: String?
+        var create2Caller: String?
+        var create2Goal: String?
+        var create2MinBytes: Int?
+        var create2Prefix: String?
+        var create2HookFlags: UInt16?
+        var lastMeasuredCreate2Speed: Double?
     }
 
     /// Настройки запоминаются между запусками приложения — чтобы не
     /// перевыбирать сети/условие/число процессов каждый раз заново.
+    /// Пока идёт loadSettings(), didSet-ы (language, searchMode) не должны
+    /// сохранять: иначе на диск уходят ещё не прочитанные поля по умолчанию
+    /// и затирают настоящие значения (хеш, кошелёк, выбранные слова).
+    private var isLoadingSettings = false
+
     private func saveSettings() {
+        guard !isLoadingSettings else { return }
         let settings = PersistedSettings(
             networks: Array(selectedNetworks),
             preset: selectedPreset,
@@ -229,7 +286,17 @@ final class SessionViewModel {
             manualSpeedText: manualSpeedText,
             language: language.rawValue,
             selectedWords: Array(selectedWords),
-            customWords: customWords
+            customWords: customWords,
+            searchMode: searchMode.rawValue,
+            create2Factory: create2Factory.rawValue,
+            create2CustomFactory: create2CustomFactory,
+            create2InitCodeHash: create2InitCodeHash,
+            create2Caller: create2Caller,
+            create2Goal: create2Goal.rawValue,
+            create2MinBytes: create2MinBytes,
+            create2Prefix: create2Prefix,
+            create2HookFlags: create2HookFlags,
+            lastMeasuredCreate2Speed: lastMeasuredCreate2Speed
         )
         guard let data = try? JSONEncoder().encode(settings) else { return }
         UserDefaults.standard.set(data, forKey: Self.settingsKey)
@@ -238,6 +305,8 @@ final class SessionViewModel {
     private func loadSettings() {
         guard let data = UserDefaults.standard.data(forKey: Self.settingsKey),
               let settings = try? JSONDecoder().decode(PersistedSettings.self, from: data) else { return }
+        isLoadingSettings = true
+        defer { isLoadingSettings = false }
         if !settings.networks.isEmpty { selectedNetworks = Set(settings.networks) }
         if !settings.preset.isEmpty { selectedPreset = settings.preset }
         if settings.workerCount > 0 { workerCount = min(settings.workerCount, maxWorkerCount) }
@@ -250,6 +319,16 @@ final class SessionViewModel {
         if let lang = settings.language.flatMap(AppLanguage.init(rawValue:)) { language = lang }
         if let words = settings.selectedWords { selectedWords = Set(words) }
         customWords = settings.customWords ?? []
+        if let mode = settings.searchMode.flatMap(SearchMode.init(rawValue:)) { searchMode = mode }
+        if let factory = settings.create2Factory.flatMap(Create2Factory.init(rawValue:)) { create2Factory = factory }
+        create2CustomFactory = settings.create2CustomFactory ?? ""
+        create2InitCodeHash = settings.create2InitCodeHash ?? ""
+        create2Caller = settings.create2Caller ?? ""
+        if let goal = settings.create2Goal.flatMap(Create2Goal.init(rawValue:)) { create2Goal = goal }
+        if let minBytes = settings.create2MinBytes { create2MinBytes = min(max(minBytes, 1), Create2Math.addressBytes) }
+        create2Prefix = settings.create2Prefix ?? ""
+        create2HookFlags = settings.create2HookFlags ?? 0
+        lastMeasuredCreate2Speed = settings.lastMeasuredCreate2Speed
     }
 
     func start() {
@@ -268,6 +347,17 @@ final class SessionViewModel {
         lastFoundTotalChecked = 0
         phase = .running
 
+        if searchMode == .contracts {
+            let stream = bridge.startCreate2(
+                factory: create2FactoryAddress, initCodeHash: create2InitCodeHash.trimmingCharacters(in: .whitespacesAndNewlines),
+                caller: create2CallerTrimmed, goal: create2Goal, minBytes: create2MinBytes,
+                prefix: Create2Math.strip(create2Prefix), hookFlags: create2HookFlags,
+                workerCount: workerCount, language: language
+            )
+            consume(stream)
+            return
+        }
+
         let networks = orderedNetworks
         let fake = fakeMode ? 0.8 : nil
         let customPattern: (text: String, mode: CustomPatternMode, caseSensitive: Bool)? =
@@ -278,7 +368,12 @@ final class SessionViewModel {
             networks: networks, preset: preset, fakeFoundInterval: fake,
             workerCount: workerCount, customPattern: customPattern, language: language, words: words
         )
+        consume(stream)
+    }
 
+    func saveCreate2Settings() { saveSettings() }
+
+    private func consume(_ stream: AsyncStream<BridgeEvent>) {
         consumeTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for await event in stream {
@@ -328,7 +423,12 @@ final class SessionViewModel {
             // Короткие прогоны (<10с) слишком шумные для оценки скорости —
             // не перезаписываем ими предыдущее, более надёжное измерение.
             if e.elapsedSeconds >= 10, e.totalChecked > 0 {
-                lastMeasuredSpeed = Double(e.totalChecked) / e.elapsedSeconds
+                let speed = Double(e.totalChecked) / e.elapsedSeconds
+                if started?.networks == ["create2"] {
+                    lastMeasuredCreate2Speed = speed
+                } else {
+                    lastMeasuredSpeed = speed
+                }
                 saveSettings()
             }
         case .error(let e):

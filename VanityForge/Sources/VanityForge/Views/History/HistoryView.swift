@@ -128,16 +128,25 @@ private struct HistoryRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
-                Text(entry.privateKey)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .blur(radius: revealed ? 0 : 5)
-                    .onLongPressGesture(minimumDuration: 0.2, maximumDistance: 40) {
-                    } onPressingChanged: { pressing in
-                        withAnimation(.easeOut(duration: 0.15)) { revealed = pressing }
-                    }
+                if let salt = entry.salt {
+                    Text("salt \(salt)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                } else {
+                    Text(entry.privateKey)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .blur(radius: revealed ? 0 : 5)
+                        .onLongPressGesture(minimumDuration: 0.2, maximumDistance: 40) {
+                        } onPressingChanged: { pressing in
+                            withAnimation(.easeOut(duration: 0.15)) { revealed = pressing }
+                        }
+                }
             }
             Spacer()
             Text(entry.foundAt)

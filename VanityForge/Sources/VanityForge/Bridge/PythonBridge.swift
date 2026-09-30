@@ -42,26 +42,45 @@ final class PythonBridge {
     func start(networks: [String], preset: String, fakeFoundInterval: Double? = nil, workerCount: Int? = nil,
                customPattern: (text: String, mode: CustomPatternMode, caseSensitive: Bool)? = nil,
                language: AppLanguage = .ru, words: [String]? = nil) -> AsyncStream<BridgeEvent> {
+        var arguments = [networks.joined(separator: ","), preset, "--lang", language.rawValue]
+        if let interval = fakeFoundInterval {
+            arguments += ["--fake-found", String(interval)]
+        }
+        if let workerCount {
+            arguments += ["--workers", String(workerCount)]
+        }
+        if let customPattern {
+            arguments += ["--custom", "\(customPattern.mode.rawValue):\(customPattern.text)"]
+            if customPattern.caseSensitive {
+                arguments += ["--custom-case"]
+            }
+        }
+        if let words, !words.isEmpty {
+            arguments += ["--words", words.joined(separator: ",")]
+        }
+        return run(arguments: arguments, language: language)
+    }
+
+    /// Режим CREATE2: тот же протокол событий, другие аргументы (см. create2.py).
+    func startCreate2(factory: String, initCodeHash: String, caller: String, goal: Create2Goal,
+                      minBytes: Int, prefix: String, hookFlags: UInt16, workerCount: Int?,
+                      language: AppLanguage) -> AsyncStream<BridgeEvent> {
+        var arguments = [
+            "--create2", "--lang", language.rawValue,
+            "--factory", factory, "--init-code-hash", initCodeHash,
+            "--goal", goal.rawValue, "--min", String(minBytes),
+            "--prefix", prefix, "--hook-flags", String(hookFlags, radix: 16),
+        ]
+        if !caller.isEmpty { arguments += ["--caller", caller] }
+        if let workerCount { arguments += ["--workers", String(workerCount)] }
+        return run(arguments: arguments, language: language)
+    }
+
+    private func run(arguments: [String], language: AppLanguage) -> AsyncStream<BridgeEvent> {
         AsyncStream { continuation in
             let process = Process()
             process.executableURL = pythonPath
-            var arguments = [scriptPath.path, networks.joined(separator: ","), preset, "--lang", language.rawValue]
-            if let interval = fakeFoundInterval {
-                arguments += ["--fake-found", String(interval)]
-            }
-            if let workerCount {
-                arguments += ["--workers", String(workerCount)]
-            }
-            if let customPattern {
-                arguments += ["--custom", "\(customPattern.mode.rawValue):\(customPattern.text)"]
-                if customPattern.caseSensitive {
-                    arguments += ["--custom-case"]
-                }
-            }
-            if let words, !words.isEmpty {
-                arguments += ["--words", words.joined(separator: ",")]
-            }
-            process.arguments = arguments
+            process.arguments = [scriptPath.path] + arguments
             process.currentDirectoryURL = scriptPath.deletingLastPathComponent()
             process.environment = Self.subprocessEnvironment()
 
