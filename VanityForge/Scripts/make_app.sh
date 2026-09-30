@@ -57,7 +57,7 @@ echo "==> Bundling Python runtime + source"
 PY_RUNTIME_DEST="$APP/Contents/Resources/PythonRuntime"
 mkdir -p "$PY_RUNTIME_DEST"
 cp -R "$REPO_ROOT/build_cache/python" "$PY_RUNTIME_DEST/runtime"
-for f in bridge.py main.py networks.py patterns.py eth.py create2.py; do
+for f in bridge.py main.py networks.py patterns.py eth.py create2.py splitkey.py; do
     cp "$REPO_ROOT/$f" "$PY_RUNTIME_DEST/$f"
 done
 if [ -n "$ETHVANITY_BIN" ] && [ -x "$ETHVANITY_BIN" ]; then

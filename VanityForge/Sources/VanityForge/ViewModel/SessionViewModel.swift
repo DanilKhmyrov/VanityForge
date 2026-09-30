@@ -68,6 +68,21 @@ final class SessionViewModel {
     var customPatternMode: CustomPatternMode = .prefix
     var customPatternCaseSensitive: Bool = false
 
+    var splitKeyEnabled: Bool = false {
+        didSet { if splitKeyEnabled != oldValue { saveSettings() } }
+    }
+    var splitKeyPublic: String = ""
+    static let splitKeyNetworks: Set<String> = ["eth", "trx"]
+
+    var splitKeyTrimmed: String { Create2Math.strip(splitKeyPublic) }
+    var splitKeyValid: Bool {
+        let body = splitKeyTrimmed
+        guard body.allSatisfy(\.isHexDigit) else { return false }
+        return (body.count == 66 && (body.hasPrefix("02") || body.hasPrefix("03")))
+            || (body.count == 130 && body.hasPrefix("04"))
+    }
+    var splitKeyNetworksOK: Bool { selectedNetworks.isSubset(of: Self.splitKeyNetworks) }
+
     var contractKind: ContractKind = .create2
     var create2Factory: Create2Factory = .immutable
     var create2CustomFactory: String = ""
@@ -229,6 +244,7 @@ final class SessionViewModel {
             return true
         }
         guard !selectedNetworks.isEmpty else { return false }
+        if splitKeyEnabled { guard splitKeyValid, splitKeyNetworksOK, !fakeMode else { return false } }
         if isCustomPreset { return !trimmedCustomPattern.isEmpty }
         if selectedPreset == "word" { return !selectedWords.isEmpty }
         return true
@@ -262,6 +278,8 @@ final class SessionViewModel {
         var selectedWords: [String]?
         var customWords: [String]?
         var searchMode: String?
+        var splitKeyEnabled: Bool?
+        var splitKeyPublic: String?
         var contractKind: String?
         var create2Factory: String?
         var create2CustomFactory: String?
@@ -298,6 +316,8 @@ final class SessionViewModel {
             selectedWords: Array(selectedWords),
             customWords: customWords,
             searchMode: searchMode.rawValue,
+            splitKeyEnabled: splitKeyEnabled,
+            splitKeyPublic: splitKeyPublic,
             contractKind: contractKind.rawValue,
             create2Factory: create2Factory.rawValue,
             create2CustomFactory: create2CustomFactory,
@@ -332,6 +352,8 @@ final class SessionViewModel {
         if let words = settings.selectedWords { selectedWords = Set(words) }
         customWords = settings.customWords ?? []
         if let mode = settings.searchMode.flatMap(SearchMode.init(rawValue:)) { searchMode = mode }
+        splitKeyEnabled = settings.splitKeyEnabled ?? false
+        splitKeyPublic = settings.splitKeyPublic ?? ""
         if let kind = settings.contractKind.flatMap(ContractKind.init(rawValue:)) { contractKind = kind }
         if let factory = settings.create2Factory.flatMap(Create2Factory.init(rawValue:)) { create2Factory = factory }
         create2CustomFactory = settings.create2CustomFactory ?? ""
@@ -380,7 +402,8 @@ final class SessionViewModel {
         let words = selectedPreset == "word" ? activeWords : nil
         let stream = bridge.start(
             networks: networks, preset: preset, fakeFoundInterval: fake,
-            workerCount: workerCount, customPattern: customPattern, language: language, words: words
+            workerCount: workerCount, customPattern: customPattern, language: language, words: words,
+            splitKey: splitKeyEnabled ? splitKeyTrimmed : nil
         )
         consume(stream)
     }

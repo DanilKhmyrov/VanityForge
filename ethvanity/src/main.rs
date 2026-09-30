@@ -19,6 +19,11 @@
 //!
 //! Останавливается по SIGTERM/SIGKILL от родителя (как обычный unix-процесс),
 //! отдельного протокола остановки не требует.
+//!
+//! `--split-key <публичный ключ заказчика>`: вместо своих ключей перебираются
+//! точки P_заказчика + k·G. Находка — не приватный ключ, а добавка k: заказчик
+//! сам складывает её со своим секретом, и итоговый ключ не знает никто, кроме него.
+//! В JSON поле "private_key" в этом режиме содержит k.
 
 use secp256k1::rand::rngs::OsRng;
 use secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
@@ -35,6 +40,7 @@ mod create2;
 struct Args {
     prefixes: Vec<Vec<u8>>, // каждый префикс — последовательность полубайтов (0..=15)
     threads: usize,
+    split_key: Option<PublicKey>,
 }
 
 fn hex_nibble(c: char) -> Option<u8> {
@@ -45,6 +51,7 @@ fn parse_args() -> Args {
     let args: Vec<String> = env::args().collect();
     let mut prefixes = Vec::new();
     let mut threads = thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let mut split_key = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -55,6 +62,21 @@ fn parse_args() -> Args {
                     if let Some(nibbles) = nibbles {
                         if !nibbles.is_empty() {
                             prefixes.push(nibbles);
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            "--split-key" => {
+                if let Some(v) = args.get(i + 1) {
+                    let bytes: Option<Vec<u8>> = (0..v.trim_start_matches("0x").len() / 2)
+                        .map(|j| u8::from_str_radix(&v.trim_start_matches("0x")[j * 2..j * 2 + 2], 16).ok())
+                        .collect();
+                    match bytes.and_then(|b| PublicKey::from_slice(&b).ok()) {
+                        Some(key) => split_key = Some(key),
+                        None => {
+                            eprintln!("--split-key must be a secp256k1 public key (33 or 65 bytes hex)");
+                            std::process::exit(1);
                         }
                     }
                     i += 1;
@@ -73,7 +95,7 @@ fn parse_args() -> Args {
         i += 1;
     }
 
-    Args { prefixes, threads }
+    Args { prefixes, threads, split_key }
 }
 
 #[inline]
@@ -136,7 +158,8 @@ fn main() {
         let prefixes = args.prefixes.clone();
         let checked = Arc::clone(&checked);
         let tx = tx.clone();
-        handles.push(thread::spawn(move || worker_loop(&prefixes, &checked, tx)));
+        let split_key = args.split_key;
+        handles.push(thread::spawn(move || worker_loop(&prefixes, &checked, tx, split_key)));
     }
     drop(tx);
 
@@ -160,7 +183,7 @@ fn main() {
     }
 }
 
-fn worker_loop(prefixes: &[Vec<u8>], checked: &AtomicU64, tx: mpsc::Sender<(String, String)>) {
+fn worker_loop(prefixes: &[Vec<u8>], checked: &AtomicU64, tx: mpsc::Sender<(String, String)>, split_key: Option<PublicKey>) {
     let secp = Secp256k1::new();
     let mut rng = OsRng;
 
@@ -178,7 +201,15 @@ fn worker_loop(prefixes: &[Vec<u8>], checked: &AtomicU64, tx: mpsc::Sender<(Stri
 
     loop {
         let mut secret = SecretKey::new(&mut rng);
-        let mut pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let own = PublicKey::from_secret_key(&secp, &secret);
+        // split-key: стартовая точка P_заказчика + k·G, дальше тот же шаг +G.
+        let mut pubkey = match split_key {
+            Some(base) => match base.combine(&own) {
+                Ok(point) => point,
+                Err(_) => continue,
+            },
+            None => own,
+        };
         let mut local = 0u64;
 
         for step in 0..BATCH {

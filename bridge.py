@@ -31,6 +31,7 @@ from typing import List, Optional, Tuple
 
 import create2
 import main as core
+import splitkey
 import patterns
 from eth import ETH
 from main import cpu_worker, find_keyhunt, keyhunt_worker, save_result
@@ -228,6 +229,40 @@ def build_found_event(seq: int, network_name: str, address: str, private_key: st
     }
 
 
+def build_split_event(seq: int, network_name: str, address: str, tweak: str,
+                      matched: List[str], client_pub: str) -> dict:
+    """Находка split-key: вместо приватного ключа — добавка k для заказчика."""
+    network_presets = NETWORK_PRESETS.get(network_name, PRESETS)
+    matched_desc = [network_presets[n][0] for n in matched if n in network_presets]
+    conditions_str = "; ".join(matched_desc)
+    folder = matched[0] if len(matched) == 1 else "combo"
+    filepath = splitkey.save_result(core.RESULTS_DIR, network_name, address, tweak, client_pub,
+                                    folder, conditions_str)
+    checksum = None
+    if network_name == "eth" and core._TO_CHECKSUM:
+        try:
+            checksum = core._TO_CHECKSUM(address)
+        except Exception:
+            checksum = None
+    return {
+        "type": "found",
+        "seq": seq,
+        "network": network_name,
+        "network_full": NETWORKS[network_name].name(),
+        "address": address,
+        "checksum_address": checksum,
+        "private_key": "",
+        "matched": matched,
+        "matched_desc": matched_desc,
+        "conditions_str": conditions_str,
+        "found_words": [],
+        "filepath": filepath,
+        "found_at": datetime.now().isoformat(timespec="seconds"),
+        "tweak": tweak,
+        "client_pubkey": client_pub,
+    }
+
+
 def cpu_worker_with_custom(network_name: str, preset_key: str, result_queue: "mp.Queue",
                             stats_counter, worker_id: int,
                             custom_pattern: Optional[Tuple[str, str, bool]] = None,
@@ -271,6 +306,7 @@ def ethvanity_worker(
     stop_event,
     extra_prefixes: Optional[List[str]] = None,
     worker_override: Optional[int] = None,
+    split_key: Optional[str] = None,
 ) -> None:
     """Аналог keyhunt_worker для встроенного ethvanity. Проще и надёжнее:
     вывод сразу построчный JSON, не нужно парсить ANSI/regex терминального
@@ -279,6 +315,8 @@ def ethvanity_worker(
     threads = worker_override or (os.cpu_count() or 4)
 
     cmd = [binary_path, "--threads", str(threads)]
+    if split_key:
+        cmd += ["--split-key", split_key]
     for p in hex_prefixes:
         cmd += ["--prefix", p]
 
@@ -380,8 +418,21 @@ def generate_vanity_json(networks: List[str], preset_key: str,
                           worker_override: Optional[int] = None,
                           custom_pattern: Optional[Tuple[str, str, bool]] = None,
                           lang: str = "ru",
-                          words: Optional[List[str]] = None) -> None:
+                          words: Optional[List[str]] = None,
+                          split_key: Optional[str] = None) -> None:
     extra_hex_prefixes: List[str] = []
+    if split_key:
+        unsupported = [n for n in networks if n not in splitkey.NETWORKS_SUPPORTED]
+        try:
+            splitkey.parse_public_key(split_key)
+        except ValueError as error:
+            emit({"type": "error", "message": str(error), "fatal": True})
+            return
+        if unsupported or fake_found_interval:
+            message = ("Split-key работает только для EVM и TRON" if lang != "en"
+                       else "Split-key works only for EVM and TRON")
+            emit({"type": "error", "message": message, "fatal": True})
+            return
     if custom_pattern:
         pattern, mode, case_sensitive = custom_pattern
         install_custom_preset(pattern, mode, case_sensitive=case_sensitive, lang=lang)
@@ -439,7 +490,8 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     eth_tool_path: Optional[str] = None
     eth_tool_name: Optional[str] = None
     if not fake_found_interval and "eth" in networks:
-        keyhunt_path = find_keyhunt()
+        # keyhunt генерирует собственные ключи — в split-key он неприменим.
+        keyhunt_path = None if split_key else find_keyhunt()
         # Слова из списка релевантны для eligibility-проверки, только если
         # текущий поиск реально от них зависит (пресет "word"/"all") — иначе
         # они и так попадают в extra_hex_prefixes для генерации кандидатов
@@ -491,12 +543,11 @@ def generate_vanity_json(networks: List[str], preset_key: str,
 
         if eth_accelerated:
             worker_fn = keyhunt_worker if eth_tool_name == "keyhunt" else ethvanity_worker
-            t = threading.Thread(
-                target=worker_fn,
-                args=(eth_tool_path, preset_key, result_queue, stats_counter, stop_event,
-                      extra_hex_prefixes, worker_override),
-                daemon=True,
-            )
+            worker_args = (eth_tool_path, preset_key, result_queue, stats_counter, stop_event,
+                           extra_hex_prefixes, worker_override)
+            if split_key:
+                worker_args += (split_key,)
+            t = threading.Thread(target=worker_fn, args=worker_args, daemon=True)
             t.start()
             procs.append(t)
             effective_workers += worker_pool
@@ -504,10 +555,16 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         for net in cpu_nets:
             workers = max(1, worker_pool // len(networks))
             for i in range(workers):
-                p = mp.Process(
-                    target=cpu_worker_with_custom,
-                    args=(net, preset_key, result_queue, stats_counter, i, custom_pattern, words),
-                )
+                if split_key:
+                    p = mp.Process(
+                        target=splitkey.split_worker,
+                        args=(net, preset_key, result_queue, stats_counter, i, split_key, custom_pattern, words),
+                    )
+                else:
+                    p = mp.Process(
+                        target=cpu_worker_with_custom,
+                        args=(net, preset_key, result_queue, stats_counter, i, custom_pattern, words),
+                    )
                 p.start()
                 procs.append(p)
             effective_workers += workers
@@ -576,7 +633,10 @@ def generate_vanity_json(networks: List[str], preset_key: str,
             # диск и присылающий канал. После потолка продолжаем СЧИТАТЬ находки
             # (счётчик/редкость остаются точными), но перестаём писать файлы,
             # эмитить детальные события и дёргать RPC на баланс.
-            if detailed_emitted < MAX_DETAILED_FINDS:
+            if detailed_emitted < MAX_DETAILED_FINDS and split_key:
+                detailed_emitted += 1
+                emit(build_split_event(found_count, network_name, address, private_key, matched, split_key))
+            elif detailed_emitted < MAX_DETAILED_FINDS:
                 detailed_emitted += 1
                 emit(build_found_event(found_count, network_name, address, private_key, matched,
                                         is_fake=bool(fake_found_interval)))
@@ -899,8 +959,15 @@ def main() -> None:
             emit({"type": "error", "message": f"unknown networks: {invalid}", "fatal": True})
             sys.exit(1)
 
+    split_key: Optional[str] = None
+    if "--split-key" in args:
+        try:
+            split_key = args[args.index("--split-key") + 1].strip()
+        except IndexError:
+            split_key = None
+
     generate_vanity_json(networks, preset_key, fake_found_interval, worker_override, custom_pattern,
-                          lang=lang, words=words_override)
+                          lang=lang, words=words_override, split_key=split_key)
 
 
 if __name__ == "__main__":

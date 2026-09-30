@@ -30,6 +30,8 @@ struct NetworkPresetPicker: View {
                     ConditionDropdown()
                 }
 
+                SplitKeyControl()
+
                 workerControl
 
                 demoToggle
@@ -674,6 +676,57 @@ private struct AlphabetHintButton: View {
             .padding(14)
             .frame(width: 250, alignment: .leading)
         }
+    }
+}
+
+private struct SplitKeyControl: View {
+    @Environment(SessionViewModel.self) private var session
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: Binding(get: { session.splitKeyEnabled }, set: { session.splitKeyEnabled = $0 })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(session.t(.splitKeyTitle)).font(.system(size: 12, weight: .medium))
+                    Text(session.t(.splitKeySubtitle)).font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
+            if session.splitKeyEnabled {
+                TextField(session.t(.splitKeyPlaceholder), text: Binding(
+                    get: { session.splitKeyPublic },
+                    set: { session.splitKeyPublic = $0; session.saveCreate2Settings() }
+                ))
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.05)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(session.splitKeyPublic.isEmpty || session.splitKeyValid
+                                      ? Color.white.opacity(0.1) : Color.orange.opacity(0.7), lineWidth: 1)
+                )
+                .help(session.t(.splitKeyHint))
+
+                Text(session.t(.splitKeyHint))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !session.splitKeyNetworksOK {
+                    Label(session.t(.splitKeyNetworksOnly), systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                } else if !session.splitKeyPublic.isEmpty && !session.splitKeyValid {
+                    Label(session.t(.splitKeyInvalid), systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+        .disabled(session.isRunning)
+        .animation(.easeOut(duration: 0.18), value: session.splitKeyEnabled)
     }
 }
 

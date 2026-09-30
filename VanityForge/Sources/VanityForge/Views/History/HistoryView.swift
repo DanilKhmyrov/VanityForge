@@ -129,7 +129,7 @@ private struct HistoryRow: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
                 if let salt = entry.salt {
-                    Text("salt \(salt)")
+                    Text(salt)
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)

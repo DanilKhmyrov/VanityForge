@@ -152,6 +152,14 @@ enum L: String {
     case create3KindHint
     case create3CallerMissing
     case sectionKind
+    case splitKeyTitle
+    case splitKeySubtitle
+    case splitKeyPlaceholder
+    case splitKeyHint
+    case splitKeyNetworksOnly
+    case splitKeyInvalid
+    case splitKeyTweak
+    case splitKeyBadge
 
     func s(_ lang: AppLanguage) -> String {
         Self.table[self]?[lang] ?? rawValue
@@ -283,6 +291,14 @@ enum L: String {
         .create2KindHint: [.ru: "Адрес зависит от кода контракта: нужен хеш кода от заказчика.", .en: "The address depends on the contract code: you need the client's code hash."],
         .create3KindHint: [.ru: "Адрес не зависит от кода: намайнил один раз — развернуть можно любой контракт через CreateX.deployCreate3.", .en: "The address doesn't depend on the code: mine once, deploy any contract later via CreateX.deployCreate3."],
         .create3CallerMissing: [.ru: "Без кошелька salt сможет использовать кто угодно — и положить на адрес свой код", .en: "Without a wallet anyone can use the salt — and put their own code at the address"],
+        .splitKeyTitle: [.ru: "Для заказчика (split-key)", .en: "For a client (split-key)"],
+        .splitKeySubtitle: [.ru: "ключ адреса узнает только он", .en: "only they will know the key"],
+        .splitKeyPlaceholder: [.ru: "публичный ключ заказчика 02… / 03… / 04…", .en: "client's public key 02… / 03… / 04…"],
+        .splitKeyHint: [.ru: "Заказчик создаёт ключ у себя (python3 splitkey.py new) и присылает только публичный. Вы находите добавку k, он сам собирает приватный ключ: python3 splitkey.py combine <его ключ> <k>.", .en: "The client creates a key locally (python3 splitkey.py new) and sends only the public key. You find the tweak k; they build the private key themselves: python3 splitkey.py combine <their key> <k>."],
+        .splitKeyNetworksOnly: [.ru: "Split-key работает только для EVM и TRON — снимите остальные сети", .en: "Split-key works only for EVM and TRON — deselect the other networks"],
+        .splitKeyInvalid: [.ru: "это не публичный ключ secp256k1", .en: "not a secp256k1 public key"],
+        .splitKeyTweak: [.ru: "добавка k", .en: "tweak k"],
+        .splitKeyBadge: [.ru: "ключ только у заказчика", .en: "key stays with the client"],
         .sectionKind: [.ru: "Способ развёртывания", .en: "Deployment method"],
         .unitAttemptsPerSec: [.ru: "попыток/с", .en: "tries/s"],
     ]

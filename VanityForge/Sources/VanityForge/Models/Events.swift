@@ -73,9 +73,13 @@ struct FoundEvent: Codable, Hashable, Identifiable {
     let caller: String?
     let leadingZeroBytes: Int?
     let zeroBytes: Int?
+    /// Только для split-key: добавка k и публичный ключ заказчика.
+    let tweak: String?
+    let clientPubkey: String?
 
     var id: Int { seq }
     var isContract: Bool { salt != nil }
+    var isSplitKey: Bool { tweak != nil }
 
     enum CodingKeys: String, CodingKey {
         case seq
@@ -96,6 +100,8 @@ struct FoundEvent: Codable, Hashable, Identifiable {
         case caller
         case leadingZeroBytes = "leading_zero_bytes"
         case zeroBytes = "zero_bytes"
+        case tweak
+        case clientPubkey = "client_pubkey"
     }
 }
 

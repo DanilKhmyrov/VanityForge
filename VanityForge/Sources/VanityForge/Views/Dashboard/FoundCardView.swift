@@ -36,7 +36,7 @@ struct FoundCardView: View {
                     if let checksum = event.checksumAddress { checksumRow(checksum) }
                     if !event.matchedDesc.isEmpty || !event.foundWords.isEmpty { badgeRow }
                     if event.network == "eth" { balanceRow }
-                    privateKeyRow
+                    if event.isSplitKey { splitKeyRows } else { privateKeyRow }
                 }
             }
             .padding(.horizontal, 16)
@@ -184,6 +184,51 @@ struct FoundCardView: View {
             Spacer(minLength: 4)
             CopyButton(copied: $keyCopied) { copy(event.privateKey) }
         }
+    }
+
+    @ViewBuilder
+    private var splitKeyRows: some View {
+        if let tweak = event.tweak {
+            HStack(spacing: 8) {
+                label(session.t(.splitKeyTweak))
+                Text(tweak)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                CopyButton(copied: $saltCopied) { copy(tweak) }
+            }
+        }
+        HStack(spacing: 8) {
+            badge(session.t(.splitKeyBadge), color: .green)
+            Spacer()
+            Button {
+                copy(splitKeySummary)
+                clientCopied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { clientCopied = false }
+            } label: {
+                Label(session.t(.create2CopyForClient), systemImage: clientCopied ? "checkmark" : "paperplane.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Capsule().fill(accent.opacity(0.18)))
+                    .foregroundStyle(clientCopied ? Color.green : accent)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var splitKeySummary: String {
+        [
+            "Vanity address:  \(event.checksumAddress ?? event.address)",
+            "Tweak (k):       \(event.tweak ?? "")",
+            "Your public key: \(event.clientPubkey ?? "")",
+            "",
+            "Your private key for this address = (your private key + k) mod n.",
+            "Only you know it. To compute it locally:",
+            "python3 splitkey.py combine <your private key> \(event.tweak ?? "") \(event.network)",
+        ].joined(separator: "\n")
     }
 
     @ViewBuilder

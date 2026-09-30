@@ -41,7 +41,7 @@ final class PythonBridge {
 
     func start(networks: [String], preset: String, fakeFoundInterval: Double? = nil, workerCount: Int? = nil,
                customPattern: (text: String, mode: CustomPatternMode, caseSensitive: Bool)? = nil,
-               language: AppLanguage = .ru, words: [String]? = nil) -> AsyncStream<BridgeEvent> {
+               language: AppLanguage = .ru, words: [String]? = nil, splitKey: String? = nil) -> AsyncStream<BridgeEvent> {
         var arguments = [networks.joined(separator: ","), preset, "--lang", language.rawValue]
         if let interval = fakeFoundInterval {
             arguments += ["--fake-found", String(interval)]
@@ -57,6 +57,9 @@ final class PythonBridge {
         }
         if let words, !words.isEmpty {
             arguments += ["--words", words.joined(separator: ",")]
+        }
+        if let splitKey {
+            arguments += ["--split-key", splitKey]
         }
         return run(arguments: arguments, language: language)
     }
