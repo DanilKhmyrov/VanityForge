@@ -160,6 +160,8 @@ enum L: String {
     case splitKeyInvalid
     case splitKeyTweak
     case splitKeyBadge
+    case create2UseGPU
+    case create2UseGPUHint
 
     func s(_ lang: AppLanguage) -> String {
         Self.table[self]?[lang] ?? rawValue
@@ -299,6 +301,8 @@ enum L: String {
         .splitKeyInvalid: [.ru: "это не публичный ключ secp256k1", .en: "not a secp256k1 public key"],
         .splitKeyTweak: [.ru: "добавка k", .en: "tweak k"],
         .splitKeyBadge: [.ru: "ключ только у заказчика", .en: "key stays with the client"],
+        .create2UseGPU: [.ru: "Считать на видеокарте", .en: "Use the GPU"],
+        .create2UseGPUHint: [.ru: "Metal, в ~5 раз быстрее процессора. Выключите, если видеокарта нужна под другое.", .en: "Metal, about 5× faster than the CPU. Turn off if you need the GPU for something else."],
         .sectionKind: [.ru: "Способ развёртывания", .en: "Deployment method"],
         .unitAttemptsPerSec: [.ru: "попыток/с", .en: "tries/s"],
     ]

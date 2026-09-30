@@ -25,6 +25,12 @@ else
     ETHVANITY_BIN=""
 fi
 
+echo "==> Building metalvanity (GPU-перебор CREATE2/CREATE3)"
+if METALVANITY_BIN="$("$REPO_ROOT/metalvanity/build.sh" | tail -1)"; then :; else
+    echo "    сборка metalvanity не удалась — контракты будут считаться на CPU"
+    METALVANITY_BIN=""
+fi
+
 if [ ! -f "$ROOT/Resources/AppIcon.icns" ]; then
     echo "==> Generating app icon"
     swift "$ROOT/Scripts/generate_icon.swift" "$ICON_BASE"
@@ -62,6 +68,9 @@ for f in bridge.py main.py networks.py patterns.py eth.py create2.py splitkey.py
 done
 if [ -n "$ETHVANITY_BIN" ] && [ -x "$ETHVANITY_BIN" ]; then
     cp "$ETHVANITY_BIN" "$PY_RUNTIME_DEST/ethvanity"
+fi
+if [ -n "$METALVANITY_BIN" ] && [ -x "$METALVANITY_BIN" ]; then
+    cp "$METALVANITY_BIN" "$PY_RUNTIME_DEST/metalvanity"
 fi
 
 touch "$APP"

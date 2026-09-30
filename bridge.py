@@ -761,7 +761,7 @@ def emit_presets() -> None:
 
 
 def generate_create2_json(params: "create2.Params", worker_override: Optional[int] = None,
-                          lang: str = "ru") -> None:
+                          lang: str = "ru", engine_pref: str = "auto") -> None:
     """Режим CREATE2 — подбор salt для адреса контракта. Протокол событий тот
     же, что у кошельков (started/stats/found/stopped), чтобы дашборд, график
     и живая лента работали без изменений; в found вместо приватного ключа
@@ -773,7 +773,7 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
     workers = worker_override or (os.cpu_count() or 8)
     result_queue: Queue = mp.Queue()
     stats_counter = Value(ctypes.c_ulonglong, 0)
-    engine, procs = create2.start_search(params, workers, result_queue, stats_counter, stop_event)
+    engine, procs = create2.start_search(params, workers, result_queue, stats_counter, stop_event, engine_pref)
     network_full = params.network_full(lang)
     kind = params.kind
 
@@ -785,7 +785,8 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
         "preset_desc": params.describe(lang),
         "cpu_count": os.cpu_count() or 0,
         "workers_total": workers,
-        "gpu": {"available": engine == "ethvanity", "path": None, "tool": engine if engine == "ethvanity" else None},
+        "gpu": {"available": engine in ("ethvanity", "metal"), "path": None,
+                "tool": engine if engine in ("ethvanity", "metal") else None},
         "fake": False,
     })
 
@@ -1014,7 +1015,8 @@ def main() -> None:
         except ValueError as error:
             emit({"type": "error", "message": str(error), "fatal": True})
             sys.exit(1)
-        generate_create2_json(params, workers, lang=lang)
+        engine_pref = args[args.index("--engine") + 1] if "--engine" in args and args.index("--engine") + 1 < len(args) else "auto"
+        generate_create2_json(params, workers, lang=lang, engine_pref=engine_pref)
         return
 
     positional = [a for a in args if not a.startswith("--")]

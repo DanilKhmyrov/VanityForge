@@ -19,6 +19,7 @@ CLI:
     python3 create2.py --init-code-hash 0x… [--factory 0x…] [--caller 0x…]
                        [--goal leading|zeros|prefix|hook] [--min N]
                        [--prefix dead] [--hook-flags 00C0] [--workers N]
+                       [--engine auto|gpu|cpu]
 """
 import json
 import math
@@ -211,6 +212,16 @@ def save_result(results_dir: Path, params: Params, address: str, salt: str, lang
     return str(filepath)
 
 
+def find_gpu_engine() -> Optional[str]:
+    """metalvanity — перебор на видеокарте Apple Silicon (см. metalvanity/main.swift).
+    Лежит рядом со скриптами в .app или собран в репозитории metalvanity/build.sh."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(here, "metalvanity"), os.path.join(here, "metalvanity", "build", "metalvanity")):
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
 def find_engine() -> Optional[str]:
     local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ethvanity")
     if os.path.isfile(local) and os.access(local, os.X_OK):
@@ -267,35 +278,55 @@ def python_worker(params: Params, worker_id: int, result_queue: "mp.Queue", stat
             local = 0
 
 
-def start_search(params: Params, workers: int, result_queue, stats_counter, stop_event) -> Tuple[str, List]:
-    """Запускает перебор: Rust-движок, если он есть, иначе Python-процессы.
-    Находки кладутся в result_queue как (address, salt). Возвращает имя движка
-    и список запущенного (для остановки)."""
+def _goal_ok(params: Params, address: str) -> bool:
+    return _goal_check(params)(bytes.fromhex(address[2:])) is not None
+
+
+def _launch(cmd: List[str], params: Params, result_queue, stats_counter, stop_event) -> subprocess.Popen:
+    """Запускает движок с построчным JSON на stdout и перекачивает его события
+    в result_queue / stats_counter. Каждая находка перепроверяется здесь же:
+    адрес пересчитывается из salt и должен совпасть и подойти под условие."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+
+    def pump() -> None:
+        last_checked = 0
+        for line in iter(proc.stdout.readline, ""):
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "stats":
+                checked = payload.get("checked", 0)
+                with stats_counter.get_lock():
+                    stats_counter.value += max(0, checked - last_checked)
+                last_checked = checked
+            elif payload.get("type") == "found":
+                address, salt = payload["address"], payload["salt"]
+                if params_address(params, salt) != address or not _goal_ok(params, address):
+                    result_queue.put(("error", f"engine returned a wrong salt {salt}"))
+                    continue
+                result_queue.put((address, salt))
+            elif payload.get("type") == "error":
+                result_queue.put(("error", payload.get("message", "engine error")))
+
+    threading.Thread(target=pump, daemon=True).start()
+    threading.Thread(target=lambda: (stop_event.wait(), proc.kill()), daemon=True).start()
+    return proc
+
+
+def start_search(params: Params, workers: int, result_queue, stats_counter, stop_event,
+                 engine_pref: str = "auto") -> Tuple[str, List]:
+    """Запускает перебор: GPU (metalvanity), если он есть и не выбран CPU, иначе
+    Rust-движок, иначе Python-процессы. Находки кладутся в result_queue как
+    (address, salt). Возвращает имя движка и список запущенного (для остановки)."""
+    gpu = find_gpu_engine() if engine_pref != "cpu" else None
+    if gpu:
+        return "metal", [_launch([gpu] + params.engine_args(), params, result_queue, stats_counter, stop_event)]
+
     engine = find_engine()
     if engine:
-        cmd = [engine, "--create2", "--threads", str(workers)] + params.engine_args()
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
-
-        def pump() -> None:
-            last_checked = 0
-            for line in iter(proc.stdout.readline, ""):
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if payload.get("type") == "stats":
-                    checked = payload.get("checked", 0)
-                    with stats_counter.get_lock():
-                        stats_counter.value += max(0, checked - last_checked)
-                    last_checked = checked
-                elif payload.get("type") == "found":
-                    result_queue.put((payload["address"], payload["salt"]))
-                elif payload.get("type") == "error":
-                    result_queue.put(("error", payload.get("message", "engine error")))
-
-        threading.Thread(target=pump, daemon=True).start()
-        threading.Thread(target=lambda: (stop_event.wait(), proc.kill()), daemon=True).start()
-        return "ethvanity", [proc]
+        cmd = [engine, "--threads", str(workers)] + params.engine_args()
+        return "ethvanity", [_launch(cmd, params, result_queue, stats_counter, stop_event)]
 
     floor = params.min_bytes - 1 if params.goal in ("leading", "zeros") else 0
     best = mp.Value("i", floor)
@@ -347,7 +378,8 @@ def main() -> None:
     result_queue: "mp.Queue" = mp.Queue()
     stats_counter = mp.Value("Q", 0)
     stop_event = threading.Event()
-    engine, procs = start_search(params, workers, result_queue, stats_counter, stop_event)
+    engine_pref = sys.argv[sys.argv.index("--engine") + 1] if "--engine" in sys.argv else "auto"
+    engine, procs = start_search(params, workers, result_queue, stats_counter, stop_event, engine_pref)
 
     rarity = estimate_rarity(params)
     print(f"CREATE2 · {params.describe()} · 1 : {rarity:,} · {engine} × {workers}")

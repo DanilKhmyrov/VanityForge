@@ -13,6 +13,7 @@ struct Create2Form: View {
             }
             section(session.t(.sectionContract)) { contractFields }
             section(session.t(.sectionTarget)) { targetPicker }
+            gpuToggle
         }
         .disabled(session.isRunning)
         .onChange(of: session.create2InitCodeHash) { session.saveCreate2Settings() }
@@ -160,6 +161,24 @@ struct Create2Form: View {
             }
 
             rarityLine
+        }
+    }
+
+    private var gpuToggle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: Binding(get: { session.create2UseGPU }, set: {
+                session.create2UseGPU = $0
+                session.saveCreate2Settings()
+            })) {
+                Label(session.t(.create2UseGPU), systemImage: "cpu")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            Text(session.t(.create2UseGPUHint))
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

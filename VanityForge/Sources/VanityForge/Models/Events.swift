@@ -11,6 +11,7 @@ struct GPUInfo: Codable, Hashable {
         switch tool {
         case "keyhunt": return "keyhunt"
         case "ethvanity": return "ethvanity"
+        case "metal": return "Metal GPU"
         default: return nil
         }
     }
