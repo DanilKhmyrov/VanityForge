@@ -5,55 +5,84 @@ struct NetworkPresetPicker: View {
     @Environment(AppCatalog.self) private var catalog
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            header
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                SearchModeSwitcher()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 12)
 
-            SearchModeSwitcher()
-
-            if session.searchMode == .wallets {
-                section(session.t(.sectionNetworks)) {
-                    VStack(spacing: 8) {
-                        ForEach(catalog.networkOrder, id: \.self) { key in
-                            NetworkChip(
-                                key: key,
-                                name: catalog.networkNames[key] ?? key,
-                                isSelected: session.selectedNetworks.contains(key),
-                                disabled: session.isRunning
-                            ) {
-                                session.toggleNetwork(key)
+            // Середина прокручивается: раскрытый список условий, свои слова или
+            // форма контракта больше не выталкивают кнопку старта за край окна.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if session.searchMode == .wallets {
+                        section(session.t(.sectionNetworks)) {
+                            VStack(spacing: 8) {
+                                ForEach(catalog.networkOrder, id: \.self) { key in
+                                    NetworkChip(
+                                        key: key,
+                                        name: catalog.networkNames[key] ?? key,
+                                        isSelected: session.selectedNetworks.contains(key),
+                                        disabled: session.isRunning
+                                    ) {
+                                        session.toggleNetwork(key)
+                                    }
+                                }
                             }
+                        }
+
+                        section(session.t(.sectionCondition)) {
+                            ConditionDropdown()
+                        }
+
+                        section(session.t(.sectionSettings)) {
+                            settingsCard {
+                                SplitKeyControl()
+                                cardDivider
+                                GPUToggle(hint: session.t(.useGPUHintWallets))
+                                cardDivider
+                                workerControl
+                                cardDivider
+                                demoToggle
+                            }
+                        }
+                    } else {
+                        Create2Form()
+                        section(session.t(.sectionSettings)) {
+                            settingsCard { workerControl }
                         }
                     }
                 }
-
-                section(session.t(.sectionCondition)) {
-                    ConditionDropdown()
-                }
-
-                SplitKeyControl()
-
-                GPUToggle(hint: session.t(.useGPUHintWallets))
-
-                workerControl
-
-                demoToggle
-            } else {
-                ScrollView {
-                    Create2Form()
-                        .padding(.trailing, 4)
-                }
-                .scrollIndicators(.never)
-
-                workerControl
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
             }
+            .scrollIndicators(.never)
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black, location: 0.025),
+                        .init(color: .black, location: 0.97),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
 
-            Spacer(minLength: 0)
-
-            LanguageSwitcher()
-
-            StartStopButton()
+            VStack(spacing: 12) {
+                LanguageSwitcher()
+                StartStopButton()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 20)
+            .overlay(alignment: .top) {
+                Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+            }
         }
-        .padding(20)
         .frame(width: 306)
         .background(sidebarBackground)
         .overlay(alignment: .trailing) {
@@ -63,6 +92,25 @@ struct NetworkPresetPicker: View {
             )
             .frame(width: 1)
         }
+    }
+
+    private var cardDivider: some View {
+        Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+    }
+
+    private func settingsCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            content()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+                )
+        )
     }
 
     private var sidebarBackground: some View {
@@ -245,11 +293,25 @@ private struct ConditionDropdown: View {
                 withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
-                    Text(selectedLabel)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectedLabel)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        if let rarity = session.targetRarity {
+                            HStack(spacing: 5) {
+                                Text("1 : \(Format.compact(rarity, session.language))")
+                                    .font(.system(size: 10, design: .monospaced))
+                                if let eta = session.etaSeconds(forRarity: rarity) {
+                                    Text("· ≈ \(Format.duration(seconds: eta, session.language))")
+                                        .font(.system(size: 10))
+                                }
+                            }
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                        }
+                    }
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .bold))
@@ -328,36 +390,42 @@ private struct ConditionRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 9) {
                 Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
                     .font(.system(size: 13))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.white.opacity(0.3))
-                Text(description)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-                    .multilineTextAlignment(.leading)
-                Spacer(minLength: 6)
-                if let rarity {
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text("1 : \(Format.compact(rarity, session.language))")
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                        if let eta = session.etaSeconds(forRarity: rarity) {
-                            Text("\(session.t(.rarityApprox))\(Format.duration(seconds: eta, session.language))")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary.opacity(0.8))
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(description)
+                        .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? .primary : .secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let rarity {
+                        HStack(spacing: 6) {
+                            Text("1 : \(Format.compact(rarity, session.language))")
+                                .font(.system(size: 10, design: .monospaced))
+                            if let eta = session.etaSeconds(forRarity: rarity) {
+                                Text("·")
+                                Label(Format.duration(seconds: eta, session.language), systemImage: "clock")
+                                    .font(.system(size: 10))
+                                    .labelStyle(.titleAndIcon)
+                            }
                         }
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                     }
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
                 }
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, 9)
-            .padding(.vertical, 6)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(hovering ? Color.white.opacity(0.08) : (isSelected ? Color.white.opacity(0.05) : Color.clear))
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(hovering ? Color.white.opacity(0.08) : (isSelected ? Color.accentColor.opacity(0.12) : Color.clear))
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

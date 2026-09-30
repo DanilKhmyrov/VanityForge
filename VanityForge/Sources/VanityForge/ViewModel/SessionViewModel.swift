@@ -55,7 +55,20 @@ final class SessionViewModel {
 
     func t(_ key: L) -> String { key.s(language) }
 
-    var phase: Phase = .idle
+    var phase: Phase = .idle {
+        didSet {
+            guard phase != oldValue else { return }
+            if phase == .running {
+                sleepGuard.begin(reason: "VanityForge: address search")
+            } else if phase == .idle {
+                sleepGuard.end()
+            }
+        }
+    }
+    private let sleepGuard = SleepGuard()
+    private let notifier = FoundNotifier()
+    /// Mac не заснёт, пока идёт поиск (см. SleepGuard).
+    var keepsAwake: Bool { phase != .idle }
     var searchMode: SearchMode = .wallets {
         didSet { if searchMode != oldValue { saveSettings() } }
     }
@@ -228,6 +241,36 @@ final class SessionViewModel {
 
     var isRunning: Bool { phase != .idle }
 
+    /// Редкость текущего условия (1 к N) — для шанса находки и оценок времени.
+    var targetRarity: UInt64? {
+        if searchMode == .contracts { return create2Rarity }
+        if isCustomPreset {
+            return catalog.customPatternRarity(pattern: trimmedCustomPattern, mode: customPatternMode,
+                                               networks: selectedNetworks, caseSensitive: customPatternCaseSensitive)
+        }
+        return availablePresets.first(where: { $0.key == selectedPreset })?.rarity1In
+    }
+
+    /// Вероятность, что за уже проверенное число адресов нашлось хотя бы одно
+    /// совпадение: 1 − e^(−проверено/N). Не «прогресс»: у перебора нет конца,
+    /// 63% — это ровно среднее ожидание, дальше шанс растёт всё медленнее.
+    var findChance: Double? {
+        guard let rarity = targetRarity, rarity > 0, let checked = stats?.totalChecked else { return nil }
+        return 1 - exp(-Double(checked) / Double(rarity))
+    }
+
+    /// Среднее время на одну находку при текущей скорости.
+    var secondsPerFind: Double? {
+        guard let rarity = targetRarity, displaySpeed > 0 else { return nil }
+        return Double(rarity) / displaySpeed
+    }
+
+    /// Убирает карточки из ленты (файлы находок на диске не трогает).
+    func clearFeed() {
+        foundItems = []
+        balancesBySeq = [:]
+        DockBadge.set(nil)
+    }
 
     var orderedNetworks: [String] { catalog.networkOrder.filter { selectedNetworks.contains($0) } }
 
@@ -393,6 +436,8 @@ final class SessionViewModel {
         rarestGap = nil
         totalFoundCount = 0
         lastFoundTotalChecked = 0
+        DockBadge.set(nil)
+        notifier.prepare()
         phase = .running
 
         if searchMode == .contracts {
@@ -461,6 +506,8 @@ final class SessionViewModel {
             // секунду — без ограничения список и анимации вставки заваливали
             // весь UI. Полная история всё равно остаётся на диске (results/).
             foundItems.insert(e, at: 0)
+            DockBadge.set(totalFoundCount)
+            notifier.found(e, lang: language)
             if foundItems.count > Self.maxDisplayedFinds {
                 let removed = foundItems.suffix(from: Self.maxDisplayedFinds)
                 for old in removed { balancesBySeq.removeValue(forKey: old.seq) }

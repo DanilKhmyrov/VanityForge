@@ -162,6 +162,24 @@ enum L: String {
     case splitKeyBadge
     case useGPU
     case gpuLoadLabel
+    case openFile
+    case openExplorer
+    case showQR
+    case qrCaption
+    case copyAll
+    case copiedToast
+    case fileMissing
+    case statChance
+    case chanceAvgPrefix
+    case chanceNoData
+    case feedTitle
+    case openResultsFolder
+    case clearFeed
+    case sectionSettings
+    case notifyFoundTitle
+    case notifyMoreFinds
+    case keepAwakeChip
+    case keepAwakeHelp
     case useGPUHintContracts
     case useGPUHintWallets
 
@@ -303,6 +321,24 @@ enum L: String {
         .splitKeyInvalid: [.ru: "это не публичный ключ secp256k1", .en: "not a secp256k1 public key"],
         .splitKeyTweak: [.ru: "добавка k", .en: "tweak k"],
         .splitKeyBadge: [.ru: "ключ только у заказчика", .en: "key stays with the client"],
+        .openFile: [.ru: "Открыть файл", .en: "Open file"],
+        .openExplorer: [.ru: "Обозреватель", .en: "Explorer"],
+        .showQR: [.ru: "QR-код", .en: "QR code"],
+        .qrCaption: [.ru: "Адрес для перевода — приватный ключ здесь не показывается", .en: "Address for receiving — the private key is not shown here"],
+        .copyAll: [.ru: "Скопировать всё", .en: "Copy all"],
+        .copiedToast: [.ru: "Скопировано", .en: "Copied"],
+        .fileMissing: [.ru: "Файл находки не найден: ", .en: "Result file not found: "],
+        .statChance: [.ru: "Шанс найти", .en: "Find chance"],
+        .chanceAvgPrefix: [.ru: "в среднем 1 за ", .en: "on average 1 per "],
+        .chanceNoData: [.ru: "нет оценки редкости", .en: "no rarity estimate"],
+        .feedTitle: [.ru: "Находки", .en: "Finds"],
+        .openResultsFolder: [.ru: "Папка с находками", .en: "Results folder"],
+        .clearFeed: [.ru: "Очистить ленту", .en: "Clear feed"],
+        .sectionSettings: [.ru: "Параметры", .en: "Settings"],
+        .notifyFoundTitle: [.ru: "Найден адрес", .en: "Address found"],
+        .notifyMoreFinds: [.ru: " и ещё находок: ", .en: " and more finds: "],
+        .keepAwakeChip: [.ru: "Mac не уснёт", .en: "Mac stays awake"],
+        .keepAwakeHelp: [.ru: "Во время поиска Mac не уходит в сон (экран может гаснуть)", .en: "While searching the Mac won't go to sleep (the display may still turn off)"],
         .gpuLoadLabel: [.ru: "Нагрузка", .en: "Load"],
         .useGPU: [.ru: "Считать на видеокарте", .en: "Use the GPU"],
         .useGPUHintWallets: [.ru: "Metal: EVM-адреса в 15–30 раз быстрее. TRON, Solana, TON, split-key и «содержит» считаются на процессоре.", .en: "Metal: EVM addresses 15–30× faster. TRON, Solana, TON, split-key and \"contains\" run on the CPU."],

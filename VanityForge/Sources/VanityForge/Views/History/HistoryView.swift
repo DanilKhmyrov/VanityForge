@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct HistoryView: View {
@@ -23,6 +24,19 @@ struct HistoryView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button {
+                    let dir = ResultsLocation.directory
+                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    NSWorkspace.shared.open(dir)
+                } label: {
+                    Label(session.t(.openResultsFolder), systemImage: "folder")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Color.white.opacity(0.05)))
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
                 Button { reload() } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -117,6 +131,16 @@ private struct HistoryRow: View {
     let entry: HistoryEntry
     let accent: Color
     @State private var revealed = false
+    @State private var hovering = false
+
+    private func rowButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 11))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(help)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -150,6 +174,15 @@ private struct HistoryRow: View {
             Text(entry.foundAt)
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
+            HStack(spacing: 10) {
+                rowButton("doc.on.doc", help: "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(entry.address, forType: .string)
+                }
+                rowButton("doc.text", help: "Open") { NSWorkspace.shared.open(entry.fileURL) }
+                rowButton("folder", help: "Finder") { NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL]) }
+            }
+            .opacity(hovering ? 1 : 0.45)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -159,7 +192,9 @@ private struct HistoryRow: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(accent.opacity(0.12), lineWidth: 1)
+                .strokeBorder(accent.opacity(hovering ? 0.35 : 0.12), lineWidth: 1)
         )
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
