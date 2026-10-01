@@ -197,11 +197,20 @@ final class AppCatalog {
             }
             // На ETH сырой адрес без регистра — совпадение по регистру
             // (checksum) для каждой hex-буквы (a-f) добавляет независимый
-            // множитель ~1/2. У base58/64-сетей регистр уже часть алфавита,
-            // дополнительной поправки не нужно.
+            // множитель ~1/2. У base58/64-сетей регистр — часть алфавита: с учётом
+            // регистра поправки нет, а без него подходит любое допустимое написание
+            // (для «trigyr» в base58 — 32), то есть совпадение во столько же раз
+            // чаще. Начало TRON уже посчитано по всем написаниям выше.
             if caseSensitive, net == "eth" {
                 let letterCount = Double(pattern.filter { $0.isLetter }.count)
                 probability *= pow(0.5, letterCount)
+            }
+            if !caseSensitive, net != "eth", !(net == "trx" && mode == .prefix), let chars = Self.alphabetChars[net] {
+                let spellings = pattern.reduce(1.0) { product, c in
+                    let options = Set([Character(c.lowercased()), Character(c.uppercased())]).filter { chars.contains($0) }
+                    return product * Double(max(options.count, 1))
+                }
+                probability = min(1, probability * spellings)
             }
             worst = worst.map { max($0, probability) } ?? probability
         }
