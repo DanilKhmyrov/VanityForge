@@ -161,6 +161,9 @@ enum L: String {
     case splitKeyTweak
     case splitKeyBadge
     case useGPU
+    case checkBalance
+    case checkBalanceHelp
+    case balanceFailed
     case gpuLoadLabel
     case openFile
     case openExplorer
@@ -340,6 +343,9 @@ enum L: String {
         .keepAwakeChip: [.ru: "Mac не уснёт", .en: "Mac stays awake"],
         .keepAwakeHelp: [.ru: "Во время поиска Mac не уходит в сон (экран может гаснуть)", .en: "While searching the Mac won't go to sleep (the display may still turn off)"],
         .gpuLoadLabel: [.ru: "Нагрузка", .en: "Load"],
+        .checkBalance: [.ru: "Проверить баланс", .en: "Check balance"],
+        .checkBalanceHelp: [.ru: "Адрес отправится в публичные RPC-узлы — поэтому только по нажатию", .en: "The address is sent to public RPC nodes — so only on click"],
+        .balanceFailed: [.ru: "не удалось получить баланс", .en: "couldn't get the balance"],
         .useGPU: [.ru: "Считать на видеокарте", .en: "Use the GPU"],
         .useGPUHintWallets: [.ru: "Metal: EVM и TRON (и для split-key) в 15–30 раз быстрее. Solana, TON и «содержит» считаются на процессоре.", .en: "Metal: EVM and TRON (split-key too) 15–30× faster. Solana, TON and \"contains\" run on the CPU."],
         .useGPUHintContracts: [.ru: "Metal, в ~5 раз быстрее процессора. Выключите, если видеокарта нужна под другое.", .en: "Metal, about 5× faster than the CPU. Turn off if you need the GPU for something else."],

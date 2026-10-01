@@ -154,6 +154,35 @@ final class PythonBridge {
         }
     }
 
+    /// Баланс EVM-адреса по всем сетям (`bridge.py --balance`). Адрес уходит в
+    /// публичные RPC-узлы, поэтому только по кнопке на карточке.
+    static func fetchBalance(address: String) async -> [String: Double]? {
+        await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = venvPython
+            process.arguments = [bridgeScript.path, "--balance", address]
+            process.currentDirectoryURL = bridgeScript.deletingLastPathComponent()
+            process.environment = subprocessEnvironment()
+            let stdoutPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = Pipe()
+            do {
+                try process.run()
+            } catch {
+                return nil
+            }
+            let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard let output = String(data: data, encoding: .utf8) else { return nil }
+            for line in output.split(separator: "\n") {
+                if case .balance(let event)? = BridgeEvent.parse(line: String(line)) {
+                    return event.balances
+                }
+            }
+            return nil
+        }.value
+    }
+
     /// Однократный опрос `bridge.py --list-presets`: сети/пресеты берём из
     /// Python (patterns.py/networks.py), а не дублируем их вручную в Swift —
     /// так UI не может разойтись с тем, что реально валидируется на бэкенде.

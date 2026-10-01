@@ -271,10 +271,28 @@ final class SessionViewModel {
         return Double(rarity) / displaySpeed
     }
 
+    /// Находки, для которых сейчас идёт запрос баланса, и те, где он не удался.
+    var balanceLoading: Set<Int> = []
+    var balanceFailed: Set<Int> = []
+
+    func checkBalance(for event: FoundEvent) {
+        guard !balanceLoading.contains(event.seq) else { return }
+        balanceLoading.insert(event.seq)
+        balanceFailed.remove(event.seq)
+        let address = event.checksumAddress ?? event.address
+        Task { @MainActor in
+            let balances = await PythonBridge.fetchBalance(address: address)
+            balanceLoading.remove(event.seq)
+            if let balances { balancesBySeq[event.seq] = balances } else { balanceFailed.insert(event.seq) }
+        }
+    }
+
     /// Убирает карточки из ленты (файлы находок на диске не трогает).
     func clearFeed() {
         foundItems = []
         balancesBySeq = [:]
+        balanceLoading = []
+        balanceFailed = []
         DockBadge.set(nil)
     }
 
@@ -436,6 +454,8 @@ final class SessionViewModel {
         displaySpeed = 0
         speedHistory = []
         balancesBySeq = [:]
+        balanceLoading = []
+        balanceFailed = []
         started = nil
         lastStopped = nil
         lastError = nil

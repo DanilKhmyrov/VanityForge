@@ -146,10 +146,27 @@ struct FoundCardView: View {
                 Text(balanceText(balances))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(balances.values.contains(where: { $0 > 0 }) ? Color.green : Color.white.opacity(0.35))
-            } else {
+            } else if session.balanceLoading.contains(event.seq) {
+                ProgressView().controlSize(.mini)
                 Text(session.t(.calculatingBalance))
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
+            } else {
+                Button {
+                    session.checkBalance(for: event)
+                } label: {
+                    Text(session.t(.checkBalance))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .underline()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(session.t(.checkBalanceHelp))
+                if session.balanceFailed.contains(event.seq) {
+                    Text(session.t(.balanceFailed))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                }
             }
         }
         .transition(.opacity)

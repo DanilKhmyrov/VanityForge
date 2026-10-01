@@ -24,7 +24,6 @@ import sys
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from multiprocessing import Queue, Value
 from typing import List, Optional, Tuple
@@ -164,14 +163,10 @@ def install_word_list(words: List[str]) -> None:
     patterns.SEARCH_WORDS = tuple(w for w in words if w)
 
 
-# Баланс ETH-адреса — это RPC-запрос (сотни мс — секунды), поэтому не
-# блокирует основной цикл: считается в небольшом пуле фоновых потоков и
-# прилетает отдельным событием "balance", когда будет готов. Пул с
-# ограниченным числом воркеров — чтобы частые находки (например, при общем
-# custom-паттерне) не открывали сотни параллельных соединений к публичной RPC.
-_balance_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="balance")
-
-
+# Баланс ETH-адреса — запрос к публичным RPC-узлам, то есть адрес уходит третьим
+# лицам. Поэтому только по явной просьбе: приложение запускает
+# `bridge.py --balance <адрес>` по кнопке на карточке, а не на каждую находку
+# (на широких паттернах это были бы сотни запросов).
 def fetch_balance_and_emit(seq: int, address: str) -> None:
     try:
         balances = asyncio.run(ETH().get_all_balances(address))
@@ -787,10 +782,6 @@ def generate_vanity_json(networks: List[str], preset_key: str,
                 detailed_emitted += 1
                 emit(build_found_event(found_count, network_name, address, private_key, matched,
                                         is_fake=bool(fake_found_interval)))
-                if network_name == "eth":
-                    # Демо-режим тоже безопасно фетчит баланс — интервал там
-                    # фиксирован (~1.25 находки/с), ни на диск, ни на RPC не давит.
-                    _balance_executor.submit(fetch_balance_and_emit, found_count, address)
             elif not throttled_notified:
                 throttled_notified = True
                 if lang == "en":
@@ -1209,6 +1200,15 @@ def main() -> None:
 
     if "--list-presets" in args:
         emit_presets()
+        return
+
+    if "--balance" in args:
+        idx = args.index("--balance")
+        address = args[idx + 1].strip() if idx + 1 < len(args) else ""
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+            emit({"type": "error", "message": "--balance needs an EVM address", "fatal": True})
+            sys.exit(1)
+        fetch_balance_and_emit(0, address)
         return
 
     fake_found_interval: Optional[float] = None
