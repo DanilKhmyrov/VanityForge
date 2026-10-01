@@ -241,6 +241,14 @@ final class SessionViewModel {
 
     var isRunning: Bool { phase != .idle }
 
+    /// Свой паттерн может встретиться хотя бы в одной из выбранных сетей.
+    var customPatternPossible: Bool {
+        selectedNetworks.contains { net in
+            catalog.patternPossible(trimmedCustomPattern, mode: customPatternMode, network: net,
+                                    caseSensitive: customPatternCaseSensitive)
+        }
+    }
+
     /// Редкость текущего условия (1 к N) — для шанса находки и оценок времени.
     var targetRarity: UInt64? {
         if searchMode == .contracts { return create2Rarity }
@@ -318,7 +326,7 @@ final class SessionViewModel {
         }
         guard !selectedNetworks.isEmpty else { return false }
         if splitKeyEnabled { guard splitKeyValid, splitKeyNetworksOK, !fakeMode else { return false } }
-        if isCustomPreset { return !trimmedCustomPattern.isEmpty }
+        if isCustomPreset { return !trimmedCustomPattern.isEmpty && customPatternPossible }
         if selectedPreset == "word" { return !selectedWords.isEmpty }
         return true
     }

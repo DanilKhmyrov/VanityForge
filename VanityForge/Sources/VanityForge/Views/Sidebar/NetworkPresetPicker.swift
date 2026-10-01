@@ -564,7 +564,13 @@ private struct CustomPatternInput: View {
             .controlSize(.small)
             .disabled(session.isRunning)
 
-            if let rarity {
+            if !session.customPatternText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !session.customPatternPossible {
+                Label(session.t(.patternImpossible), systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let rarity {
                 let dangerous = Format.rarityIsDangerous(rarity)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {

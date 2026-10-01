@@ -161,6 +161,7 @@ enum L: String {
     case splitKeyTweak
     case splitKeyBadge
     case useGPU
+    case patternImpossible
     case checkBalance
     case checkBalanceHelp
     case balanceFailed
@@ -346,6 +347,7 @@ enum L: String {
         .checkBalance: [.ru: "Проверить баланс", .en: "Check balance"],
         .checkBalanceHelp: [.ru: "Адрес отправится в публичные RPC-узлы — поэтому только по нажатию", .en: "The address is sent to public RPC nodes — so only on click"],
         .balanceFailed: [.ru: "не удалось получить баланс", .en: "couldn't get the balance"],
+        .patternImpossible: [.ru: "Таких символов нет в адресах выбранных сетей — совпадение невозможно (см. «?»)", .en: "These characters never occur in addresses of the selected networks — no match is possible (see \"?\")"],
         .useGPU: [.ru: "Считать на видеокарте", .en: "Use the GPU"],
         .useGPUHintWallets: [.ru: "Metal: EVM и TRON (и для split-key) в 15–30 раз быстрее. Solana, TON и «содержит» считаются на процессоре.", .en: "Metal: EVM and TRON (split-key too) 15–30× faster. Solana, TON and \"contains\" run on the CPU."],
         .useGPUHintContracts: [.ru: "Metal, в ~5 раз быстрее процессора. Выключите, если видеокарта нужна под другое.", .en: "Metal, about 5× faster than the CPU. Turn off if you need the GPU for something else."],

@@ -105,11 +105,26 @@ final class AppCatalog {
     /// Оценка «1 из N» для своего паттерна на самой "щедрой" (частой) из
     /// выбранных сетей — то есть худший/самый частый случай, чтобы
     /// предупреждение было консервативным, а не оптимистичным.
+    /// Может ли паттерн вообще встретиться в адресе сети: все символы есть в её
+    /// алфавите (без учёта регистра — хоть в одном написании; у ETH с учётом
+    /// регистра сравнивается checksum, где есть и A-F), а начало TRON — с T.
+    func patternPossible(_ pattern: String, mode: CustomPatternMode, network: String, caseSensitive: Bool) -> Bool {
+        guard var chars = Self.alphabetChars[network] else { return true }
+        if network == "eth" { chars.formUnion("ABCDEF") }
+        let ok = pattern.allSatisfy { c in
+            chars.contains(c) || (!caseSensitive && chars.contains { $0.lowercased() == c.lowercased() })
+        }
+        if network == "trx", mode == .prefix, let first = pattern.first {
+            return ok && (caseSensitive ? first == "T" : first.lowercased() == "t")
+        }
+        return ok
+    }
+
     func customPatternRarity(pattern: String, mode: CustomPatternMode, networks: Set<String>, caseSensitive: Bool = false) -> UInt64? {
         guard !pattern.isEmpty else { return nil }
         let len = Double(pattern.count)
         var worst: Double?
-        for net in networks {
+        for net in networks where patternPossible(pattern, mode: mode, network: net, caseSensitive: caseSensitive) {
             let alphabet = Double(alphabetSizes[net] ?? 58)
             let body = Double(bodyLengths[net] ?? 40)
             var probability: Double
