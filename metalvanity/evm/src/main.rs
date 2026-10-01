@@ -22,11 +22,12 @@
 //! считает пачку (~0,1 с), потом ждёт столько, чтобы доля работы не превышала
 //! gpu-load %, а средняя скорость — max-speed.
 //!
-//! Цель — «начало:конец» в hex (любая часть может быть пустой); адрес подходит,
-//! если совпал хотя бы с одной целью. Итоговую проверку условия делает bridge.py.
+//! Цель — «начало:конец» в hex (любая часть может быть пустой) или «*подстрока»
+//! (где угодно в адресе); адрес подходит, если совпал хотя бы с одной целью.
+//! Итоговую проверку условия делает bridge.py.
 //!
 //! --tron-target — то же для TRON, в base58 («начало» включает ведущую T, конец —
-//! до 10 символов). У TRON и EVM из одного ключа одинаковые 20 байт адреса, так что
+//! до 10 символов, «*подстрока» — где угодно). У TRON и EVM из одного ключа одинаковые 20 байт адреса, так что
 //! обе сети проверяются на одном и том же кандидате.
 //!
 //! --split-key: точки — P_заказчика + k·G, в находке вместо приватного ключа
@@ -268,6 +269,63 @@ impl TronTarget {
     }
 }
 
+/// Цели «*подстрока»: ETH — полубайты, TRON — цифры base58.
+struct Contains {
+    eth: Vec<Vec<u8>>,
+    tron: Vec<Vec<u8>>,
+}
+
+impl Contains {
+    fn none() -> Contains {
+        Contains { eth: Vec::new(), tron: Vec::new() }
+    }
+
+    fn parse_eth(raw: &str) -> Vec<u8> {
+        let nibbles: Option<Vec<u8>> = raw.chars().map(|c| c.to_digit(16).map(|d| d as u8)).collect();
+        match nibbles {
+            Some(n) if !n.is_empty() && n.len() <= 40 => n,
+            _ => fail("contains target must be 1..40 hex characters"),
+        }
+    }
+
+    fn parse_tron(raw: &str) -> Vec<u8> {
+        let digits: Option<Vec<u8>> = raw.chars().map(|c| b58_digit(c).map(|d| d as u8)).collect();
+        match digits {
+            Some(d) if !d.is_empty() && d.len() <= TRON_LEN => d,
+            _ => fail("tron contains target must be 1..34 base58 characters"),
+        }
+    }
+
+    /// Секции конфигурации ядра: длина и по символу на байт.
+    fn words(items: &[Vec<u8>], stride: usize) -> Vec<u32> {
+        let mut out = vec![items.len() as u32];
+        for item in items {
+            let mut w = vec![0u32; stride];
+            w[0] = item.len() as u32;
+            for (j, &v) in item.iter().enumerate() {
+                w[1 + j / 4] |= (v as u32) << (8 * (j % 4));
+            }
+            out.extend(w);
+        }
+        out
+    }
+
+    fn eth_matches(&self, address: &[u8; 20]) -> bool {
+        let hex = to_hex(address);
+        self.eth.iter().any(|n| {
+            let needle: String = n.iter().map(|&d| char::from_digit(d as u32, 16).unwrap()).collect();
+            hex.contains(&needle)
+        })
+    }
+
+    fn tron_matches(&self, address: &str) -> bool {
+        self.tron.iter().any(|d| {
+            let needle: String = d.iter().map(|&x| B58[x as usize] as char).collect();
+            address.contains(&needle)
+        })
+    }
+}
+
 struct Hit {
     thread: u32,
     run: u64,
@@ -289,7 +347,8 @@ struct Gpu {
 }
 
 impl Gpu {
-    fn new(threads: u32, batch: u32, capacity: u32, start: &[PublicKey], patterns: &[Pattern], tron: &[TronTarget]) -> Gpu {
+    fn new(threads: u32, batch: u32, capacity: u32, start: &[PublicKey], patterns: &[Pattern], tron: &[TronTarget],
+           contains: &Contains) -> Gpu {
         let device = Device::system_default().unwrap_or_else(|| fail("no Metal device"));
         let library = device
             .new_library_with_source(KERNEL, &CompileOptions::new())
@@ -322,6 +381,8 @@ impl Gpu {
         for target in tron {
             cfg.extend(target.words());
         }
+        cfg.extend(Contains::words(&contains.eth, 11));
+        cfg.extend(Contains::words(&contains.tron, 10));
 
         let slots = (0..2)
             .map(|_| (device.new_buffer(4, shared), device.new_buffer(capacity as u64 * 32, shared)))
@@ -421,6 +482,7 @@ fn verify(
     hit: &Hit,
     patterns: &[Pattern],
     tron: &[TronTarget],
+    contains: &Contains,
 ) -> Option<(SecretKey, String)> {
     let key = keys.key(hit);
     let address = eth_address(&keys.public(secp, &key));
@@ -429,9 +491,12 @@ fn verify(
     }
     if hit.network == 1 {
         let text = tron_address(&address);
-        return tron.iter().any(|t| t.matches(&text)).then_some((key, text));
+        let hit = tron.iter().any(|t| t.matches(&text)) || contains.tron_matches(&text);
+        return hit.then_some((key, text));
     }
-    if !patterns.iter().any(|(value, mask)| (0..20).all(|i| address[i] & mask[i] == value[i])) {
+    if !patterns.iter().any(|(value, mask)| (0..20).all(|i| address[i] & mask[i] == value[i]))
+        && !contains.eth_matches(&address)
+    {
         fail(&format!("GPU pattern mismatch: thread {} run {} j {}", hit.thread, hit.run, hit.j));
     }
     Some((key, format!("0x{}", to_hex(&address))))
@@ -448,7 +513,7 @@ fn self_test() -> ! {
     let client = PublicKey::from_secret_key(&secp, &SecretKey::new(&mut OsRng));
     for (name, base) in [("evm", None), ("evm split-key", Some(client))] {
         let keys = Keys::random(threads, batch, base);
-        let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &everything, &[]);
+        let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &everything, &[], &Contains::none());
         for run in 0..3u64 {
             let command = gpu.submit(0);
             let hits = gpu.collect(0, &command, run);
@@ -456,39 +521,51 @@ fn self_test() -> ! {
                 fail(&format!("{name} run {run}: expected {} hits, got {}", threads * window, hits.len()));
             }
             for hit in &hits {
-                verify(&secp, &keys, hit, &everything, &[]);
+                verify(&secp, &keys, hit, &everything, &[], &Contains::none());
             }
             println!("{{\"type\":\"self_test\",\"case\":\"{name}\",\"run\":{run},\"checked\":{},\"ok\":true}}", hits.len());
         }
     }
 
-    // TRON: GPU должен найти ровно то, что находит CPU перебором всех кандидатов.
+    // TRON и «содержит»: GPU должен найти ровно то, что находит CPU перебором
+    // всех кандидатов.
     let tron = [TronTarget::parse("TX:"), TronTarget::parse(":a"), TronTarget::parse("TR:z")];
-    let keys = Keys::random(threads, batch, None);
-    let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &[], &tron);
-    for run in 0..2u64 {
-        let command = gpu.submit(0);
-        let mut found: Vec<String> = gpu
-            .collect(0, &command, run)
-            .iter()
-            .filter_map(|hit| verify(&secp, &keys, hit, &[], &tron).map(|(_, a)| a))
-            .collect();
-        let mut expected: Vec<String> = Vec::new();
-        for t in 0..threads {
-            for j in 0..window {
-                let hit = Hit { thread: t, run, j, address: [0; 20], network: 1 };
-                let text = tron_address(&eth_address(&keys.public(&secp, &keys.key(&hit))));
-                if tron.iter().any(|target| target.matches(&text)) {
-                    expected.push(text);
+    let cases: [(&str, &[TronTarget], Contains); 3] = [
+        ("tron", &tron, Contains::none()),
+        ("tron contains", &[], Contains { eth: Vec::new(), tron: vec![Contains::parse_tron("abc"), Contains::parse_tron("Zz")] }),
+        ("evm contains", &[], Contains { eth: vec![Contains::parse_eth("abc"), Contains::parse_eth("0f0")], tron: Vec::new() }),
+    ];
+    for (name, tron, contains) in cases.iter() {
+        let keys = Keys::random(threads, batch, None);
+        let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &[], tron, contains);
+        for run in 0..2u64 {
+            let command = gpu.submit(0);
+            let mut found: Vec<String> = gpu
+                .collect(0, &command, run)
+                .iter()
+                .filter_map(|hit| verify(&secp, &keys, hit, &[], tron, contains).map(|(_, a)| a))
+                .collect();
+            let mut expected: Vec<String> = Vec::new();
+            for t in 0..threads {
+                for j in 0..window {
+                    let hit = Hit { thread: t, run, j, address: [0; 20], network: 1 };
+                    let raw = eth_address(&keys.public(&secp, &keys.key(&hit)));
+                    let text = tron_address(&raw);
+                    if tron.iter().any(|target| target.matches(&text)) || contains.tron_matches(&text) {
+                        expected.push(text);
+                    }
+                    if contains.eth_matches(&raw) {
+                        expected.push(format!("0x{}", to_hex(&raw)));
+                    }
                 }
             }
+            found.sort();
+            expected.sort();
+            if found != expected {
+                fail(&format!("{name} run {run}: GPU found {}, CPU expected {}", found.len(), expected.len()));
+            }
+            println!("{{\"type\":\"self_test\",\"case\":\"{name}\",\"run\":{run},\"matched\":{},\"ok\":true}}", found.len());
         }
-        found.sort();
-        expected.sort();
-        if found != expected {
-            fail(&format!("tron run {run}: GPU found {}, CPU expected {}", found.len(), expected.len()));
-        }
-        println!("{{\"type\":\"self_test\",\"case\":\"tron\",\"run\":{run},\"matched\":{},\"ok\":true}}", found.len());
     }
     std::process::exit(0);
 }
@@ -499,9 +576,21 @@ fn main() {
         self_test();
     }
     let value_of = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let mut contains = Contains::none();
+    for w in args.windows(2) {
+        if w[0] == "--target" {
+            if let Some(needle) = w[1].strip_prefix('*') {
+                contains.eth.push(Contains::parse_eth(&needle.to_lowercase()));
+            }
+        } else if w[0] == "--tron-target" {
+            if let Some(needle) = w[1].strip_prefix('*') {
+                contains.tron.push(Contains::parse_tron(needle));
+            }
+        }
+    }
     let mut patterns: Vec<Pattern> = args
         .windows(2)
-        .filter(|w| w[0] == "--target")
+        .filter(|w| w[0] == "--target" && !w[1].starts_with('*'))
         .map(|w| {
             let (pre, suf) = w[1].split_once(':').unwrap_or((w[1].as_str(), ""));
             pattern(pre, suf)
@@ -514,7 +603,7 @@ fn main() {
     }
     let tron: Vec<TronTarget> = args
         .windows(2)
-        .filter(|w| w[0] == "--tron-target")
+        .filter(|w| w[0] == "--tron-target" && !w[1].starts_with('*'))
         .map(|w| TronTarget::parse(&w[1]))
         .collect();
     let split_base = value_of("--split-key").map(|raw| {
@@ -524,11 +613,13 @@ fn main() {
             .and_then(|b| PublicKey::from_slice(&b).ok())
             .unwrap_or_else(|| fail("--split-key must be a secp256k1 public key (33 or 65 bytes hex)"))
     });
-    if patterns.is_empty() && tron.is_empty() {
+    if patterns.is_empty() && tron.is_empty() && contains.eth.is_empty() && contains.tron.is_empty() {
         eprintln!("usage: metalvanity-evm --target <prefix>:<suffix> [--tron-target <prefix>:<suffix>] [...]");
         std::process::exit(1);
     }
-    if patterns.len() > MAX_PATTERNS || tron.len() > MAX_PATTERNS {
+    if patterns.len() > MAX_PATTERNS || tron.len() > MAX_PATTERNS
+        || contains.eth.len() > MAX_PATTERNS || contains.tron.len() > MAX_PATTERNS
+    {
         fail("too many targets");
     }
     let threads = value_of("--threads").and_then(|v| v.parse().ok()).unwrap_or(16384u32).max(1);
@@ -540,7 +631,7 @@ fn main() {
     };
 
     let mut keys = Keys::random(threads, batch, split_base);
-    let gpu = Gpu::new(threads, batch, 1024, &keys.points(), &patterns, &tron);
+    let gpu = Gpu::new(threads, batch, 1024, &keys.points(), &patterns, &tron, &contains);
     let secp = Secp256k1::new();
     let per_run = threads as u64 * (2 * batch as u64 + 1);
 
@@ -557,7 +648,7 @@ fn main() {
 
     let report = |hits: Vec<Hit>, keys: &Keys| {
         for hit in hits {
-            if let Some((key, address)) = verify(&secp, keys, &hit, &patterns, &tron) {
+            if let Some((key, address)) = verify(&secp, keys, &hit, &patterns, &tron, &contains) {
                 let network = if hit.network == 1 { "trx" } else { "eth" };
                 println!(
                     "{{\"type\":\"found\",\"network\":\"{network}\",\"address\":\"{address}\",\"private_key\":\"{}\"}}",

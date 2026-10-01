@@ -311,27 +311,82 @@ static inline void record(uint t, uint offset, thread const uint *a, uint networ
     slot[7] = network;
 }
 
-// cfg после ETH-шаблонов: число TRON-целей и цели по 20 слов:
-//   [0] флаги (1 — есть начало, 2 — есть конец), [1] k — длина конца (≤ 10),
-//   [2..7] / [8..13] — границы (0x41 ++ адрес) для начала, 6 слов big-endian,
-//   [14] конец mod 2^k, [15..16] конец mod 29^k, [17..18] 29^k (lo, hi).
+static inline uint nibble_at(thread const uint *a, int i) {
+    uint byte = (a[i >> 3] >> (8 * ((i >> 1) & 3))) & 0xffu;
+    return (i & 1) ? (byte & 0xfu) : (byte >> 4);
+}
+
+// 34 цифры base58 адреса TRON (значения 0..57, старшая первой) из 0x41 ++ адрес ++ checksum.
+static inline void tron_digits(thread const uint *v, uint chk, thread uchar *digits) {
+    // 25 байт числа: 0x41, 20 байт адреса, 4 байта checksum; n[0] — старший
+    // байт, n[1..6] — по 4 байта big-endian.
+    uint bytes[25];
+    bytes[0] = v[0] & 0xffu;
+    for (int i = 0; i < 5; i++)
+        for (int b = 0; b < 4; b++) bytes[1 + 4 * i + b] = (v[1 + i] >> (24 - 8 * b)) & 0xffu;
+    for (int b = 0; b < 4; b++) bytes[21 + b] = (chk >> (24 - 8 * b)) & 0xffu;
+    uint n[7];
+    n[0] = bytes[0];
+    for (int i = 0; i < 6; i++)
+        n[1 + i] = (bytes[1 + 4 * i] << 24) | (bytes[2 + 4 * i] << 16) | (bytes[3 + 4 * i] << 8) | bytes[4 + 4 * i];
+    // 7 делений на 58^5: каждое даёт 5 младших цифр.
+    for (int c = 0; c < 7; c++) {
+        ulong rem = 0;
+        for (int i = 0; i < 7; i++) {
+            ulong cur = (rem << 32) | n[i];
+            n[i] = uint(cur / 656356768UL);
+            rem = cur % 656356768UL;
+        }
+        uint chunk = uint(rem);
+        for (int d = 0; d < 5; d++) {
+            int pos = 34 - c * 5 - d;   // 35 цифр, старшая (нулевая) отбрасывается
+            if (pos >= 1) digits[pos - 1] = uchar(chunk % 58);
+            chunk /= 58;
+        }
+    }
+}
+
+// cfg после ETH-шаблонов — три секции подряд, каждая начинается с числа записей:
+//   TRON-цели по 20 слов:
+//     [0] флаги (1 — есть начало, 2 — есть конец), [1] k — длина конца (≤ 10),
+//     [2..7] / [8..13] — границы (0x41 ++ адрес) для начала, 6 слов big-endian,
+//     [14] конец mod 2^k, [15..16] конец mod 29^k, [17..18] 29^k (lo, hi).
+//   ETH «содержит» по 11 слов: [0] длина в полубайтах, дальше по полубайту на байт.
+//   TRON «содержит» по 10 слов: [0] длина, дальше цифры base58 (0..57) по байту.
 // Начало base58 — это диапазон чисел, проверка без контрольной суммы. Конец —
-// остаток числа (адрес ++ checksum) по модулю 58^k = 2^k · 29^k.
+// остаток числа (адрес ++ checksum) по модулю 58^k = 2^k · 29^k. «Содержит» на
+// TRON требует всей base58-строки: sha256d и 7 делений 200-битного числа.
 static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint offset,
                          constant uint *cfg, device atomic_uint *hits, device uint *out) {
     uint a[5];
     eth_address(x, y, a);
-    bool ok = false;
-    for (uint k = 0; k < cfg[3] && !ok; k++) {
+    bool eth_hit = false;
+    for (uint k = 0; k < cfg[3] && !eth_hit; k++) {
         constant uint *pat = cfg + 4 + k * 10;
-        ok = (a[0] & pat[5]) == pat[0] && (a[1] & pat[6]) == pat[1] && (a[2] & pat[7]) == pat[2]
-          && (a[3] & pat[8]) == pat[3] && (a[4] & pat[9]) == pat[4];
+        eth_hit = (a[0] & pat[5]) == pat[0] && (a[1] & pat[6]) == pat[1] && (a[2] & pat[7]) == pat[2]
+               && (a[3] & pat[8]) == pat[3] && (a[4] & pat[9]) == pat[4];
     }
-    if (ok) record(t, offset, a, 0, cfg, hits, out);
 
     constant uint *tron = cfg + 4 + cfg[3] * 10;
     uint ntron = tron[0];
-    if (ntron == 0) return;
+    constant uint *eth_contains = tron + 1 + ntron * 20;
+    uint nec = eth_contains[0];
+    constant uint *tron_contains = eth_contains + 1 + nec * 11;
+    uint ntc = tron_contains[0];
+
+    for (uint k = 0; k < nec && !eth_hit; k++) {
+        constant uint *pt = eth_contains + 1 + k * 11;
+        int len = int(pt[0]);
+        for (int pos = 0; pos + len <= 40 && !eth_hit; pos++) {
+            bool same = true;
+            for (int j = 0; j < len && same; j++)
+                same = nibble_at(a, pos + j) == ((pt[1 + (j >> 2)] >> (8 * (j & 3))) & 0xffu);
+            eth_hit = same;
+        }
+    }
+    if (eth_hit) record(t, offset, a, 0, cfg, hits, out);
+
+    if (ntron == 0 && ntc == 0) return;
     uint v[6] = { 0x41u, bswap(a[0]), bswap(a[1]), bswap(a[2]), bswap(a[3]), bswap(a[4]) };
     bool have_chk = false;
     uint chk = 0;
@@ -354,6 +409,21 @@ static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint of
         }
         record(t, offset, a, 1, cfg, hits, out);
         return;
+    }
+
+    if (ntc == 0) return;
+    if (!have_chk) chk = tron_checksum(v);
+    uchar digits[34];
+    tron_digits(v, chk, digits);
+    for (uint k = 0; k < ntc; k++) {
+        constant uint *pt = tron_contains + 1 + k * 10;
+        int len = int(pt[0]);
+        for (int pos = 0; pos + len <= 34; pos++) {
+            bool same = true;
+            for (int j = 0; j < len && same; j++)
+                same = digits[pos + j] == ((pt[1 + (j >> 2)] >> (8 * (j & 3))) & 0xffu);
+            if (same) { record(t, offset, a, 1, cfg, hits, out); return; }
+        }
     }
 }
 

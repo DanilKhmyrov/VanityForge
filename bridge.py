@@ -403,10 +403,12 @@ def find_gpu_eth() -> Optional[str]:
     return None
 
 
-def eth_hex_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]]) -> Optional[List[str]]:
+def eth_hex_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]],
+                    allow_contains: bool = False) -> Optional[List[str]]:
     """Цели для ETH-движков (GPU и ethvanity) в виде "начало:конец" (hex) — ровно
     под выбранный пресет, включая условия на конец адреса. None — условие так не
-    выразить (подстрока, не-hex), нужен перебор на Python.
+    выразить (не-hex; подстрока — только для GPU, allow_contains: цель «*abc»),
+    нужен перебор на Python.
     Цели — надмножество: регистр (EIP-55) и остальное проверяет предикат."""
     hex_re = re.compile(r"[0-9a-f]+")
     if preset_key == CUSTOM_KEY:
@@ -414,8 +416,10 @@ def eth_hex_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bo
             return None
         pattern, mode, _ = custom_pattern
         pattern = pattern.lower()
-        if mode not in ("prefix", "suffix") or not hex_re.fullmatch(pattern) or len(pattern) > 40:
+        if not hex_re.fullmatch(pattern) or len(pattern) > 40:
             return None
+        if mode == "contains":
+            return [f"*{pattern}"] if allow_contains else None
         return [f"{pattern}:"] if mode == "prefix" else [f":{pattern}"]
 
     same = [h * 10 for h in "0123456789abcdef"]
@@ -451,14 +455,15 @@ def _case_variants(pattern: str, chars: set) -> Optional[List[str]]:
 def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]]) -> Optional[List[str]]:
     """Цели для GPU-движка на TRON: "начало:конец" в base58. Адрес TRON всегда
     начинается с T (и предикаты смотрят на строку целиком, с T), конец на GPU —
-    до 10 символов. None — условие так не выразить, TRON ищется на CPU."""
+    до 10 символов, «*abc» — подстрока где угодно. None — условие так не
+    выразить, TRON ищется на CPU."""
     chars = ALPHABET_CHARS["trx"]
     valid = lambda s: bool(s) and all(c in chars for c in s)
     if preset_key == CUSTOM_KEY:
         if not custom_pattern:
             return None
         pattern, mode, case_sensitive = custom_pattern
-        if mode not in ("prefix", "suffix"):
+        if mode not in ("prefix", "suffix", "contains"):
             return None
         variants = [pattern] if case_sensitive else _case_variants(pattern, chars)
         if variants is None:
@@ -466,6 +471,8 @@ def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]
         variants = [v for v in variants if valid(v)]
         if mode == "prefix":
             targets = [f"{v}:" for v in variants if v.startswith("T") and len(v) <= 34]
+        elif mode == "contains":
+            targets = [f"*{v}" for v in variants if len(v) <= 34]
         else:
             if any(len(v) > 10 for v in variants):
                 return None
@@ -615,7 +622,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     gpu_trx_targets: Optional[List[str]] = None
     if not fake_found_interval and engine_pref != "cpu":
         if "eth" in networks:
-            gpu_eth_targets = eth_hex_targets(preset_key, custom_pattern)
+            gpu_eth_targets = eth_hex_targets(preset_key, custom_pattern, allow_contains=True)
         if "trx" in networks:
             gpu_trx_targets = tron_targets(preset_key, custom_pattern)
         if gpu_eth_targets or gpu_trx_targets:
