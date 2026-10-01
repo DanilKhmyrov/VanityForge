@@ -311,6 +311,13 @@ static inline void record(uint t, uint offset, thread const uint *a, uint networ
     slot[7] = network;
 }
 
+// Класс символа base58 без учёта регистра: индекс его строчной формы в
+// «123456789abcdefghijklmnopqrstuvwxyz» (A и a → один класс).
+constant uchar B58_FOLD[58] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30,
+    31, 32, 33, 34, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+};
+
 static inline uint nibble_at(thread const uint *a, int i) {
     uint byte = (a[i >> 3] >> (8 * ((i >> 1) & 3))) & 0xffu;
     return (i & 1) ? (byte & 0xfu) : (byte >> 4);
@@ -352,7 +359,8 @@ static inline void tron_digits(thread const uint *v, uint chk, thread uchar *dig
 //     [2..7] / [8..13] — границы (0x41 ++ адрес) для начала, 6 слов big-endian,
 //     [14] конец mod 2^k, [15..16] конец mod 29^k, [17..18] 29^k (lo, hi).
 //   ETH «содержит» по 11 слов: [0] длина в полубайтах, дальше по полубайту на байт.
-//   TRON «содержит» по 10 слов: [0] длина, дальше цифры base58 (0..57) по байту.
+//   TRON «содержит» по 10 слов: [0] длина | (1 << 16), если без учёта регистра,
+//   дальше по байту: цифры base58 (0..57) или, без учёта регистра, классы B58_FOLD.
 // Начало base58 — это диапазон чисел, проверка без контрольной суммы. Конец —
 // остаток числа (адрес ++ checksum) по модулю 58^k = 2^k · 29^k. «Содержит» на
 // TRON требует всей base58-строки: sha256d и 7 делений 200-битного числа.
@@ -415,13 +423,16 @@ static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint of
     if (!have_chk) chk = tron_checksum(v);
     uchar digits[34];
     tron_digits(v, chk, digits);
+    uchar folded[34];
+    for (int i = 0; i < 34; i++) folded[i] = B58_FOLD[digits[i]];
     for (uint k = 0; k < ntc; k++) {
         constant uint *pt = tron_contains + 1 + k * 10;
-        int len = int(pt[0]);
+        int len = int(pt[0] & 0xffffu);
+        bool fold = (pt[0] >> 16) != 0;
         for (int pos = 0; pos + len <= 34; pos++) {
             bool same = true;
             for (int j = 0; j < len && same; j++)
-                same = digits[pos + j] == ((pt[1 + (j >> 2)] >> (8 * (j & 3))) & 0xffu);
+                same = (fold ? folded[pos + j] : digits[pos + j]) == ((pt[1 + (j >> 2)] >> (8 * (j & 3))) & 0xffu);
             if (same) { record(t, offset, a, 1, cfg, hits, out); return; }
         }
     }

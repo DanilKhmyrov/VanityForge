@@ -114,6 +114,19 @@ final class AppCatalog {
     /// Может ли паттерн вообще встретиться в адресе сети: все символы есть в её
     /// алфавите (без учёта регистра — хоть в одном написании; у ETH с учётом
     /// регистра сравнивается checksum, где есть и A-F), а начало TRON — с T.
+    /// Символы паттерна, которых в адресах сети нет ни в каком написании
+    /// (с учётом регистра — именно в этом написании).
+    func invalidCharacters(_ pattern: String, network: String, caseSensitive: Bool) -> [Character] {
+        guard var chars = Self.alphabetChars[network] else { return [] }
+        if network == "eth" { chars.formUnion("ABCDEF") }
+        var seen: [Character] = []
+        for c in pattern where !seen.contains(c) {
+            let ok = chars.contains(c) || (!caseSensitive && chars.contains { $0.lowercased() == c.lowercased() })
+            if !ok { seen.append(c) }
+        }
+        return seen
+    }
+
     func patternPossible(_ pattern: String, mode: CustomPatternMode, network: String, caseSensitive: Bool) -> Bool {
         guard var chars = Self.alphabetChars[network] else { return true }
         if network == "eth" { chars.formUnion("ABCDEF") }

@@ -455,8 +455,8 @@ def _case_variants(pattern: str, chars: set) -> Optional[List[str]]:
 def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]]) -> Optional[List[str]]:
     """Цели для GPU-движка на TRON: "начало:конец" в base58. Адрес TRON всегда
     начинается с T (и предикаты смотрят на строку целиком, с T), конец на GPU —
-    до 10 символов, «*abc» — подстрока где угодно. None — условие так не
-    выразить, TRON ищется на CPU."""
+    до 10 символов, «*abc» — подстрока где угодно, «?abc» — она же без учёта
+    регистра. None — условие так не выразить, TRON ищется на CPU."""
     chars = ALPHABET_CHARS["trx"]
     valid = lambda s: bool(s) and all(c in chars for c in s)
     if preset_key == CUSTOM_KEY:
@@ -465,6 +465,11 @@ def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]
         pattern, mode, case_sensitive = custom_pattern
         if mode not in ("prefix", "suffix", "contains"):
             return None
+        if mode == "contains" and not case_sensitive:
+            # Без учёта регистра GPU сравнивает классы символов (A и a — один),
+            # одной целью вместо 2^n написаний.
+            folded = all(any(x in chars for x in (c.lower(), c.upper())) for c in pattern)
+            return [f"?{pattern.lower()}"] if folded and len(pattern) <= 34 else None
         variants = [pattern] if case_sensitive else _case_variants(pattern, chars)
         if variants is None:
             return None

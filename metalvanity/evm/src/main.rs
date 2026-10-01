@@ -27,7 +27,7 @@
 //! Итоговую проверку условия делает bridge.py.
 //!
 //! --tron-target — то же для TRON, в base58 («начало» включает ведущую T, конец —
-//! до 10 символов, «*подстрока» — где угодно). У TRON и EVM из одного ключа одинаковые 20 байт адреса, так что
+//! до 10 символов, «*подстрока» — где угодно, «?подстрока» — где угодно без учёта регистра). У TRON и EVM из одного ключа одинаковые 20 байт адреса, так что
 //! обе сети проверяются на одном и том же кандидате.
 //!
 //! --split-key: точки — P_заказчика + k·G, в находке вместо приватного ключа
@@ -269,15 +269,20 @@ impl TronTarget {
     }
 }
 
-/// Цели «*подстрока»: ETH — полубайты, TRON — цифры base58.
+/// Классы символов base58 без учёта регистра — как B58_FOLD в ядре.
+const B58_FOLD_CLASSES: &str = "123456789abcdefghijklmnopqrstuvwxyz";
+
+/// Цели «*подстрока»: ETH — полубайты, TRON — цифры base58 (или, без учёта
+/// регистра — «?подстрока», — классы B58_FOLD_CLASSES; флаг в старшем бите длины).
 struct Contains {
     eth: Vec<Vec<u8>>,
     tron: Vec<Vec<u8>>,
+    tron_folded: Vec<Vec<u8>>,
 }
 
 impl Contains {
     fn none() -> Contains {
-        Contains { eth: Vec::new(), tron: Vec::new() }
+        Contains { eth: Vec::new(), tron: Vec::new(), tron_folded: Vec::new() }
     }
 
     fn parse_eth(raw: &str) -> Vec<u8> {
@@ -296,12 +301,23 @@ impl Contains {
         }
     }
 
+    fn parse_tron_folded(raw: &str) -> Vec<u8> {
+        let classes: Option<Vec<u8>> = raw
+            .chars()
+            .map(|c| c.to_lowercase().next().and_then(|l| B58_FOLD_CLASSES.find(l)).map(|i| i as u8))
+            .collect();
+        match classes {
+            Some(d) if !d.is_empty() && d.len() <= TRON_LEN => d,
+            _ => fail("tron contains target must be 1..34 base58 characters"),
+        }
+    }
+
     /// Секции конфигурации ядра: длина и по символу на байт.
-    fn words(items: &[Vec<u8>], stride: usize) -> Vec<u32> {
+    fn words(items: &[(Vec<u8>, bool)], stride: usize) -> Vec<u32> {
         let mut out = vec![items.len() as u32];
-        for item in items {
+        for (item, folded) in items {
             let mut w = vec![0u32; stride];
-            w[0] = item.len() as u32;
+            w[0] = item.len() as u32 | if *folded { 1 << 16 } else { 0 };
             for (j, &v) in item.iter().enumerate() {
                 w[1 + j / 4] |= (v as u32) << (8 * (j % 4));
             }
@@ -319,10 +335,18 @@ impl Contains {
     }
 
     fn tron_matches(&self, address: &str) -> bool {
+        let lower = address.to_lowercase();
         self.tron.iter().any(|d| {
             let needle: String = d.iter().map(|&x| B58[x as usize] as char).collect();
             address.contains(&needle)
+        }) || self.tron_folded.iter().any(|d| {
+            let needle: String = d.iter().map(|&x| B58_FOLD_CLASSES.as_bytes()[x as usize] as char).collect();
+            lower.contains(&needle)
         })
+    }
+
+    fn tron_section(&self) -> Vec<(Vec<u8>, bool)> {
+        self.tron.iter().map(|d| (d.clone(), false)).chain(self.tron_folded.iter().map(|d| (d.clone(), true))).collect()
     }
 }
 
@@ -381,8 +405,9 @@ impl Gpu {
         for target in tron {
             cfg.extend(target.words());
         }
-        cfg.extend(Contains::words(&contains.eth, 11));
-        cfg.extend(Contains::words(&contains.tron, 10));
+        let eth_section: Vec<(Vec<u8>, bool)> = contains.eth.iter().map(|n| (n.clone(), false)).collect();
+        cfg.extend(Contains::words(&eth_section, 11));
+        cfg.extend(Contains::words(&contains.tron_section(), 10));
 
         let slots = (0..2)
             .map(|_| (device.new_buffer(4, shared), device.new_buffer(capacity as u64 * 32, shared)))
@@ -530,10 +555,11 @@ fn self_test() -> ! {
     // TRON и «содержит»: GPU должен найти ровно то, что находит CPU перебором
     // всех кандидатов.
     let tron = [TronTarget::parse("TX:"), TronTarget::parse(":a"), TronTarget::parse("TR:z")];
-    let cases: [(&str, &[TronTarget], Contains); 3] = [
+    let cases: [(&str, &[TronTarget], Contains); 4] = [
         ("tron", &tron, Contains::none()),
-        ("tron contains", &[], Contains { eth: Vec::new(), tron: vec![Contains::parse_tron("abc"), Contains::parse_tron("Zz")] }),
-        ("evm contains", &[], Contains { eth: vec![Contains::parse_eth("abc"), Contains::parse_eth("0f0")], tron: Vec::new() }),
+        ("tron contains", &[], Contains { tron: vec![Contains::parse_tron("abc"), Contains::parse_tron("Zz")], ..Contains::none() }),
+        ("tron contains, any case", &[], Contains { tron_folded: vec![Contains::parse_tron_folded("aBc"), Contains::parse_tron_folded("tr")], ..Contains::none() }),
+        ("evm contains", &[], Contains { eth: vec![Contains::parse_eth("abc"), Contains::parse_eth("0f0")], ..Contains::none() }),
     ];
     for (name, tron, contains) in cases.iter() {
         let keys = Keys::random(threads, batch, None);
@@ -585,6 +611,8 @@ fn main() {
         } else if w[0] == "--tron-target" {
             if let Some(needle) = w[1].strip_prefix('*') {
                 contains.tron.push(Contains::parse_tron(needle));
+            } else if let Some(needle) = w[1].strip_prefix('?') {
+                contains.tron_folded.push(Contains::parse_tron_folded(needle));
             }
         }
     }
@@ -603,7 +631,7 @@ fn main() {
     }
     let tron: Vec<TronTarget> = args
         .windows(2)
-        .filter(|w| w[0] == "--tron-target" && !w[1].starts_with('*'))
+        .filter(|w| w[0] == "--tron-target" && !w[1].starts_with('*') && !w[1].starts_with('?'))
         .map(|w| TronTarget::parse(&w[1]))
         .collect();
     let split_base = value_of("--split-key").map(|raw| {
@@ -613,12 +641,12 @@ fn main() {
             .and_then(|b| PublicKey::from_slice(&b).ok())
             .unwrap_or_else(|| fail("--split-key must be a secp256k1 public key (33 or 65 bytes hex)"))
     });
-    if patterns.is_empty() && tron.is_empty() && contains.eth.is_empty() && contains.tron.is_empty() {
+    if patterns.is_empty() && tron.is_empty() && contains.eth.is_empty() && contains.tron_section().is_empty() {
         eprintln!("usage: metalvanity-evm --target <prefix>:<suffix> [--tron-target <prefix>:<suffix>] [...]");
         std::process::exit(1);
     }
     if patterns.len() > MAX_PATTERNS || tron.len() > MAX_PATTERNS
-        || contains.eth.len() > MAX_PATTERNS || contains.tron.len() > MAX_PATTERNS
+        || contains.eth.len() > MAX_PATTERNS || contains.tron_section().len() > MAX_PATTERNS
     {
         fail("too many targets");
     }

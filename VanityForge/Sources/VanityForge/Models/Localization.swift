@@ -164,7 +164,12 @@ enum L: String {
     case gpuNotUsedNote
     case cpuOnlyChip
     case cpuOnlyHelp
-    case patternImpossible
+    case patternBadChars
+    case patternTronStart
+    case patternTryIgnoreCase
+    case alphabetHex
+    case alphabetBase58
+    case alphabetTon
     case checkBalance
     case checkBalanceHelp
     case balanceFailed
@@ -350,10 +355,15 @@ enum L: String {
         .checkBalance: [.ru: "Проверить баланс", .en: "Check balance"],
         .checkBalanceHelp: [.ru: "Адрес отправится в публичные RPC-узлы — поэтому только по нажатию", .en: "The address is sent to public RPC nodes — so only on click"],
         .balanceFailed: [.ru: "не удалось получить баланс", .en: "couldn't get the balance"],
-        .patternImpossible: [.ru: "Такой адрес невозможен в выбранных сетях: символов нет в алфавите, или у TRON такого начала не бывает (после T идут только 9, A–H, J–N, P–Z)", .en: "No such address exists in the selected networks: the characters aren't in the alphabet, or TRON addresses never start like this (after T only 9, A–H, J–N, P–Z)"],
         .gpuNotUsedNote: [.ru: "Solana и TON видеокарта не умеет — поиск пойдёт на процессоре, в сотни раз медленнее", .en: "The GPU can't do Solana or TON — the search runs on the CPU, hundreds of times slower"],
         .cpuOnlyChip: [.ru: "на процессоре", .en: "on the CPU"],
         .cpuOnlyHelp: [.ru: "Видеокарта включена, но это условие она не умеет — считает процессор", .en: "The GPU is on, but it can't do this condition — the CPU is searching"],
+        .patternBadChars: [.ru: "Символов {chars} нет в адресах {network}", .en: "Addresses on {network} never contain {chars}"],
+        .patternTronStart: [.ru: "Адреса TRON так не начинаются: после T идут только 9, A–H, J–N, P–Z", .en: "TRON addresses never start like this: after T come only 9, A–H, J–N, P–Z"],
+        .patternTryIgnoreCase: [.ru: "— снимите «Учитывать регистр», и совпадение станет возможным.", .en: "— turn off \"Case sensitive\" and a match becomes possible."],
+        .alphabetHex: [.ru: "(там только 0–9 и a–f)", .en: "(only 0–9 and a–f)"],
+        .alphabetBase58: [.ru: "(в base58 нет 0, O, I и l)", .en: "(base58 has no 0, O, I or l)"],
+        .alphabetTon: [.ru: "(только латиница, цифры, - и _)", .en: "(only Latin letters, digits, - and _)"],
         .useGPU: [.ru: "Считать на видеокарте", .en: "Use the GPU"],
         .useGPUHintWallets: [.ru: "Metal: EVM и TRON (и для split-key) в 15–30 раз быстрее, «содержит» — в сотни. Solana и TON считаются на процессоре.", .en: "Metal: EVM and TRON (split-key too) 15–30× faster, \"contains\" hundreds of times. Solana and TON run on the CPU."],
         .useGPUHintContracts: [.ru: "Metal, в ~5 раз быстрее процессора. Выключите, если видеокарта нужна под другое.", .en: "Metal, about 5× faster than the CPU. Turn off if you need the GPU for something else."],

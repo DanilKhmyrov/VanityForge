@@ -261,6 +261,32 @@ final class SessionViewModel {
         }
     }
 
+    /// Почему свой паттерн невозможен — конкретно: какие символы и в какой сети,
+    /// и поможет ли снять «Учитывать регистр». nil — паттерн возможен.
+    var customPatternIssue: String? {
+        let pattern = trimmedCustomPattern
+        guard !pattern.isEmpty, !customPatternPossible else { return nil }
+        let net = catalog.networkOrder.first { selectedNetworks.contains($0) } ?? "eth"
+        let name = catalog.networkNames[net] ?? net
+        let bad = catalog.invalidCharacters(pattern, network: net, caseSensitive: customPatternCaseSensitive)
+        var message: String
+        if bad.isEmpty {
+            message = t(.patternTronStart)
+        } else {
+            let list = bad.map { "«\($0)»" }.joined(separator: ", ")
+            let alphabet: L = net == "eth" ? .alphabetHex : (net == "ton" ? .alphabetTon : .alphabetBase58)
+            message = t(.patternBadChars)
+                .replacingOccurrences(of: "{chars}", with: list)
+                .replacingOccurrences(of: "{network}", with: name) + " " + t(alphabet)
+        }
+        if customPatternCaseSensitive, selectedNetworks.contains(where: {
+            catalog.patternPossible(pattern, mode: customPatternMode, network: $0, caseSensitive: false)
+        }) {
+            message += " " + t(.patternTryIgnoreCase)
+        }
+        return message
+    }
+
     /// Редкость текущего условия (1 к N) — для шанса находки и оценок времени.
     var targetRarity: UInt64? {
         if searchMode == .contracts { return create2Rarity }

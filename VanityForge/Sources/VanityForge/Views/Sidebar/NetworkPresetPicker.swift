@@ -571,9 +571,8 @@ private struct CustomPatternInput: View {
             .controlSize(.small)
             .disabled(session.isRunning)
 
-            if !session.customPatternText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               !session.customPatternPossible {
-                Label(session.t(.patternImpossible), systemImage: "exclamationmark.triangle.fill")
+            if let issue = session.customPatternIssue {
+                Label(issue, systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
