@@ -93,7 +93,13 @@ final class AppCatalog {
             let chars = Self.alphabetChars[net]
             let probability = words
                 .filter { word in !word.isEmpty && (chars.map { allowed in word.allSatisfy { allowed.contains($0) } } ?? true) }
-                .reduce(0.0) { $0 + 2 * pow(alphabet, -Double($1.count)) }
+                .reduce(0.0) { sum, word in
+                    let end = pow(alphabet, -Double(word.count))
+                    // Начало TRON-адреса — не случайные символы (всегда «T» и узкий
+                    // выбор второго), поэтому для него — точная доля.
+                    let start = net == "trx" ? Self.tronPrefixProbability(word, caseSensitive: true) : end
+                    return sum + start + end
+                }
             worst = max(worst, probability)
         }
         guard worst > 0 else { return nil }
@@ -114,10 +120,50 @@ final class AppCatalog {
         let ok = pattern.allSatisfy { c in
             chars.contains(c) || (!caseSensitive && chars.contains { $0.lowercased() == c.lowercased() })
         }
-        if network == "trx", mode == .prefix, let first = pattern.first {
-            return ok && (caseSensitive ? first == "T" : first.lowercased() == "t")
+        if network == "trx", mode == .prefix {
+            return ok && Self.tronPrefixProbability(pattern, caseSensitive: caseSensitive) > 0
         }
         return ok
+    }
+
+    // Все адреса TRON — base58 от 0x41 ++ 20 байт ++ checksum, то есть лежат между
+    // этими двумя строками. Поэтому второй символ бывает только 9, A–H, J–N, P–Z,
+    // а «T1…» или «Ta…» не встречаются вовсе.
+    private static let tronMin = "T9yD14Nj9j7xAB4dbGeiX9h8unkKDDv9ZR"
+    private static let tronMax = "TZJozAg1ruapycCicgz31GxvYJ1FvTVysk"
+    private static let base58Order = Array("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+
+    private static func base58Value(_ s: String) -> Double {
+        s.reduce(0.0) { $0 * 58 + Double(base58Order.firstIndex(of: $1) ?? 0) }
+    }
+
+    /// Доля адресов TRON, начинающихся с prefix: пересечение диапазона строк
+    /// prefix111…/prefixzzz… с реальным диапазоном адресов. Без учёта регистра —
+    /// сумма по всем написаниям (их немного: у base58 нет 0, O, I, l).
+    static func tronPrefixProbability(_ prefix: String, caseSensitive: Bool) -> Double {
+        guard prefix.count <= 34 else { return 0 }
+        var variants = [""]
+        for c in prefix {
+            let options = caseSensitive
+                ? [c]
+                : Array(Set([Character(c.lowercased()), Character(c.uppercased())]))
+            variants = variants.flatMap { v in options.filter { base58Order.contains($0) }.map { v + String($0) } }
+            if variants.count > 4096 { return 0 }
+        }
+        let fill = 34 - prefix.count
+        let ones = String(repeating: "1", count: fill), zs = String(repeating: "z", count: fill)
+        // Строки base58 одной длины сравниваются как числа (алфавит идёт в порядке
+        // ASCII). Ширину считаем по хвосту после префикса: разность 34-значных
+        // чисел в Double теряет всю точность уже на префиксе из десятка символов.
+        let width = variants.reduce(0.0) { sum, v in
+            let low = v + ones, high = v + zs
+            guard high >= tronMin, low <= tronMax else { return sum }
+            let tail = { (s: String) in base58Value(String(s.dropFirst(v.count))) }
+            let lo = low >= tronMin ? base58Value(ones) : tail(tronMin)
+            let hi = high <= tronMax ? base58Value(zs) : tail(tronMax)
+            return sum + max(0, hi - lo)
+        }
+        return width / (base58Value(String(tronMax.dropFirst())) - base58Value(String(tronMin.dropFirst())))
     }
 
     func customPatternRarity(pattern: String, mode: CustomPatternMode, networks: Set<String>, caseSensitive: Bool = false) -> UInt64? {
@@ -129,6 +175,8 @@ final class AppCatalog {
             let body = Double(bodyLengths[net] ?? 40)
             var probability: Double
             switch mode {
+            case .prefix where net == "trx":
+                probability = Self.tronPrefixProbability(pattern, caseSensitive: caseSensitive)
             case .prefix, .suffix:
                 probability = pow(alphabet, -len)
             case .contains:

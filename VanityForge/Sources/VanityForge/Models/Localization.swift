@@ -350,7 +350,7 @@ enum L: String {
         .checkBalance: [.ru: "Проверить баланс", .en: "Check balance"],
         .checkBalanceHelp: [.ru: "Адрес отправится в публичные RPC-узлы — поэтому только по нажатию", .en: "The address is sent to public RPC nodes — so only on click"],
         .balanceFailed: [.ru: "не удалось получить баланс", .en: "couldn't get the balance"],
-        .patternImpossible: [.ru: "Таких символов нет в адресах выбранных сетей — совпадение невозможно (см. «?»)", .en: "These characters never occur in addresses of the selected networks — no match is possible (see \"?\")"],
+        .patternImpossible: [.ru: "Такой адрес невозможен в выбранных сетях: символов нет в алфавите, или у TRON такого начала не бывает (после T идут только 9, A–H, J–N, P–Z)", .en: "No such address exists in the selected networks: the characters aren't in the alphabet, or TRON addresses never start like this (after T only 9, A–H, J–N, P–Z)"],
         .gpuNotUsedNote: [.ru: "Solana и TON видеокарта не умеет — поиск пойдёт на процессоре, в сотни раз медленнее", .en: "The GPU can't do Solana or TON — the search runs on the CPU, hundreds of times slower"],
         .cpuOnlyChip: [.ru: "на процессоре", .en: "on the CPU"],
         .cpuOnlyHelp: [.ru: "Видеокарта включена, но это условие она не умеет — считает процессор", .en: "The GPU is on, but it can't do this condition — the CPU is searching"],
