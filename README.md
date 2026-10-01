@@ -2,172 +2,98 @@
 
 # VanityForge
 
-A generator for "vanity" crypto addresses: **Solana**, **EVM (ETH, BSC, Polygon, etc.)**, **Tron**, **TON**. Comes in two forms — a native macOS app (live stats, a speed chart, a searchable find history) and a plain CLI script, both built on the same Python engine.
+A generator for "vanity" crypto addresses: **EVM (ETH, BSC, Polygon, etc.)**, **Tron**, **Solana**, **TON**, plus vanity **smart-contract addresses** (CREATE2/CREATE3). A native macOS app and a CLI, both on the same engines; EVM and TRON search runs on the Apple Silicon GPU.
 
 ![VanityForge finding vanity addresses on the GPU](docs/demo.gif)
 
 ## Features
 
-- Search up to 4 networks at once, with built-in condition presets (repeated characters, palindromes, word lists, sequences…) plus a case-sensitive custom pattern
-- UI in Russian and English, switchable at runtime
-- Live speed chart, CPU/memory/GPU usage
-- Rarity indicator and estimated time-to-find for every condition
-- EVM search acceleration kicks in automatically, nothing to install separately (details below)
-- Full find history, organized by network and condition
-- Contracts mode: mining a CREATE2 salt for a smart-contract address (details below)
+- **Wallets:** presets (10 identical characters at the start or end, DEAD…DEAD, a word from your list) or your own pattern — start, end or anywhere, with or without case sensitivity
+- **GPU (Metal):** EVM and TRON at tens of millions of addresses per second; the load can be capped at 25/50/75%
+- **Contracts:** mining a salt for CREATE2 or CREATE3 (CreateX) — leading zeros, zero bytes, a prefix, Uniswap v4 hook flags
+- **Split-key:** mine a vanity EVM/TRON address for a client who sends only a public key — only they will know the private key
+- Exact rarity and time estimates, the chance of having found something by now; impossible patterns are flagged before the start
+- Find cards with the matching part highlighted, a QR code, a block-explorer link; history of all finds
+- The Mac doesn't sleep during a search, a find counter on the Dock icon, notifications; UI in English and Russian
 
 ## Installation
 
-### Option 1 — .dmg (easiest)
+**From a release:** download `VanityForge.dmg` from [Releases](../../releases) and drag the app into `Applications`. The app isn't notarized: on first launch go to System Settings → Privacy & Security → Open Anyway. The Python runtime and all engines are inside the `.app`.
 
-1. Download `VanityForge.dmg` from [Releases](../../releases)
-2. Open it, drag `VanityForge.app` into `Applications`
-3. On first launch — right-click the app → "Open" (it isn't signed with an Apple Developer certificate, so Gatekeeper will ask for confirmation once)
-
-The Python runtime, all dependencies, and the EVM search accelerator are already packaged inside the `.app` — nothing else to install.
-
-### Option 2 — build from source
-
-You'll need:
-- Xcode Command Line Tools (`xcode-select --install`) — to build the Swift app
-- [Rust](https://rustup.rs) — to build `ethvanity` (optional: the app still works without it, just without CPU acceleration for EVM search)
-
-No need to install Python separately — the build script downloads a self-contained runtime on its own (it doesn't touch your system Python or any of your venvs).
+**From source:** you need Xcode Command Line Tools (`xcode-select --install`) and [Rust](https://rustup.rs) for the engines. Python is downloaded by the build script as a self-contained runtime.
 
 ```bash
 git clone git@github.com:DanilKhmyrov/VanityForge.git
-cd VanityForge/VanityForge
-./Scripts/make_app.sh      # builds VanityForge.app
+cd VanityForge/app
+./scripts/make_app.sh      # VanityForge.app (./scripts/make_dmg.sh — the .dmg)
 open VanityForge.app
-
-# or build the .dmg directly for distribution:
-./Scripts/make_dmg.sh
 ```
 
-## How EVM search acceleration works
+## Speed (MacBook Air M4)
 
-Vanity address search is bottlenecked by how fast you can try keys. For EVM networks (the address and private key are identical whether you call it Ethereum, BSC, Polygon, Arbitrum, or any other EVM-compatible chain), the app picks the best available accelerator automatically:
+| What | Engine | Addresses/s |
+|---|---|---|
+| EVM: start / end / anywhere | GPU, `metalvanity-evm` | ~90M |
+| TRON: start | GPU | ~60M |
+| TRON: end / anywhere | GPU | ~25M |
+| EVM, GPU off | CPU, `ethvanity` | ~10M |
+| Solana | CPU, 10 processes | ~50–90K |
+| TON, new wallet | CPU, 10 processes | ~120 |
+| TON, subwallet of an existing key | CPU, `ethvanity` | ~7.5M |
+| Contracts CREATE2 / CREATE3 | GPU, `metalvanity` | ~170M / ~60M |
 
-1. **[`metalvanity-evm`](metalvanity/evm)** (GPL-3.0, source in this repo) — search on the Apple Silicon GPU via Metal: secp256k1 field arithmetic and keccak in a compute kernel, one batched (Montgomery) inversion per 513 points (Q ± j·G share a denominator), ~90M addresses/s on an M4 (less once a fanless MacBook Air heats up) — 15–30x faster than the CPU options. It targets both the start and the end of the address, so suffix presets are accelerated too. Every hit is re-derived from its private key on the CPU (libsecp256k1 in the host, then coincurve in `bridge.py`) before it is shown. Per-thread random starts are reseeded every 30 s. Can be turned off with the "Use the GPU" switch or capped at 25/50/75% load (`--gpu-load`, or `--max-speed` addresses/s from the CLI); not used for split-key or "contains" patterns. The same pass also checks TRON (the same key gives the same 20 address bytes; a base58 prefix becomes a numeric range, the end of the address is checked through the checksum and its value mod 58^k), and split-key runs on the GPU too. "Contains" works on the GPU for both networks: for TRON the kernel builds the whole base58 string (sha256d plus seven divisions of the 200-bit number by 58^5), about 25M/s on an M4.
-2. **`keyhunt`**, if installed separately and visible on `PATH` — a third-party tool; some builds have a GPU/OpenCL mode and are usually the fastest option. The app doesn't install or bundle it itself: the provenance and licensing of the modified `keyhunt` builds floating around online aren't always clear, and shipping an unverified third-party binary alongside your own app is a bad idea.
-3. **[`ethvanity`](ethvanity)** (GPL-3.0, source included right in this repo) — a Rust accelerator written specifically for this project. Instead of a full elliptic-curve point multiplication per candidate (as in naive generation), it derives the next address via point addition — `P(k+1) = P(k) + G` — through the safe, audited API of the `secp256k1` crate, plus prefix comparison works on raw nibbles instead of formatting every candidate as a hex string. That's roughly a 7x speedup over naive Python/coincurve generation. It's built automatically by `make_app.sh`/`make_dmg.sh` and bundled inside the `.app` — works for everyone out of the box, no manual step required.
+Figures are for a cool machine: a fanless MacBook Air slows down after a few minutes under load (we saw the GPU drop from ~90M to 40–60M).
 
-If none is available (or for the other networks, which have no accelerator), the app falls back to regular multi-process Python generation.
+## How the search works
 
-## Contracts mode (CREATE2)
+EVM and TRON go to the GPU; with the GPU off, EVM is searched by `ethvanity` (Rust, CPU, the same window trick with one batched inversion per 1025 points). Solana and TON run on the CPU. Python is only a fallback for when the engines aren't built.
 
-Mining a smart-contract address for a client. A contract deployed via `CREATE2` lands at `keccak256(0xff ++ factory ++ salt ++ keccak256(code))[12:]`. The client provides the factory and the code hash; VanityForge iterates the `salt`. No private keys are involved: the result is a salt, which isn't secret and can be handed to the client as is.
+- **`metalvanity-evm`** ([engines/metalvanity-evm](engines/metalvanity-evm)) — secp256k1 and keccak in a Metal kernel. Each thread checks a window of points Q ± j·G with one batched inversion per 513 points. The same pass checks TRON: a base58 prefix becomes a numeric range, the end and the middle of the address are checked via sha256d and base58 on the GPU.
+- Every find is re-derived from its private key on the CPU twice (libsecp256k1, then coincurve) before it is shown. Each GPU thread starts from its own random key, all starts are reseeded every 30 s.
+- **TON:** a new key is derived from a mnemonic (PBKDF2), so only ~120 addresses/s. It is much faster to search a vanity address for an existing wallet by its subwallet number: 2^32 options in about 10 minutes, the key and the mnemonic stay the same (`python3 python/bridge.py --ton-subwallet <public key or address> --custom prefix:ABC`).
 
-What you can search for:
-- **leading zeros** (`0x00000000…`) — cheaper on every call and looks serious;
-- **zeros anywhere** — a zero byte in calldata costs 4 gas instead of 16;
-- **prefix** — `0xdead…`, `0xcafe…`, a project name in hex;
-- **Uniswap v4 hook** — hook permissions live in the lowest 14 bits of the address, a hook can't be deployed without a matching one.
+## Contracts (CREATE2 / CREATE3)
 
-The first 20 bytes of the salt are the client's wallet: `ImmutableCreate2Factory` checks that it matches `msg.sender`, so the salt is useless to anyone else and can't be front-run at deployment. The search reports records: every next find beats the previous one (more zeros).
-
-The search runs in the `ethvanity` Rust engine (one keccak per attempt, ~30M attempts/s on an M4). Without it, a slow Python fallback is used. CLI version:
+The address of a CREATE2 contract is `keccak256(0xff ++ factory ++ salt ++ keccak256(code))[12:]`; VanityForge iterates the salt. **CREATE3** via CreateX doesn't depend on the code: mine a salt once, deploy any contract later. There are no private keys: the result is a salt, which can be handed to the client as is. The first 20 bytes of the salt are the client's wallet, so nobody else can use the salt (or front-run it).
 
 ```bash
-python3 create2.py --init-code-hash 0x… --caller 0x… --goal leading --min 4
+python3 python/create2.py --init-code-hash 0x… --caller 0x… --goal leading --min 4
+python3 python/create2.py --kind create3 --caller 0x… --goal leading --min 4
 ```
 
-`--factory` is `immutable` (default), `arachnid` (Deterministic Deployment Proxy, used by Foundry) or any address; `--goal` is `leading`, `zeros`, `prefix` (with `--prefix dead`) or `hook` (with `--hook-flags 00C0`). Finds are saved to `results/create2/`.
+`--goal`: `leading`, `zeros`, `prefix` (with `--prefix dead`), `hook` (with `--hook-flags 00C0`); `--factory`: `immutable` (default), `arachnid` or any address.
 
-## CLI version (no app)
+## Split-key
 
-If you don't need the GUI and just want a console script:
+The client runs `python3 python/splitkey.py new` and sends only the public key. The app looks for a tweak k such that the address of P + k·G is pretty; the client builds the key themselves: `python3 python/splitkey.py combine <their private key> <k> [eth|trx]`. Works for EVM and TRON, on the GPU too.
+
+## CLI
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python3 main.py <networks> [condition]
+python3 -m venv venv && source venv/bin/activate
+pip install -r python/requirements.txt
+python3 python/main.py eth prefix10     # EVM, 10 identical characters at the start
+python3 python/main.py eth,trx word     # EVM and Tron, a word from the list
 ```
 
-### Examples
+Networks: `eth`, `trx`, `sol`, `ton`, `all`. Conditions: `prefix10`, `suffix10`, `deadprefixsuffix`, `word`, `all`; for TON — `same6`, `prefix5`, `pairs8`, `repeat2x4`, `word`. The CLI uses the same engines as the app (GPU for EVM and TRON); custom patterns are available in the app.
 
-```bash
-python3 main.py sol same5        # Solana, 5 same chars in a row
-python3 main.py all all          # all networks, any condition
-python3 main.py eth,sol word     # EVM and Solana, search by word list
-```
+## Where finds are saved
 
-## Supported networks
+The app keeps them in `~/Library/Application Support/VanityForge/results/` (the "Results folder" button), the CLI in `results/` in the current folder: one file per find with the network, address, key (or salt / tweak k), conditions and time.
 
-- `sol` — Solana
-- `ton` — TON
-- `eth` — EVM (ETH, BSC, Polygon, etc. — the same address/key works on all of them)
-- `trx` — Tron
-- `all` — all networks at once
+**Private keys are stored in plain text.** This is a generator, not a wallet: move the keys you need into secure storage and don't keep `results/` longer than necessary.
 
-## Search conditions
-
-### Repeated characters
-- `same5` / `same6` / `same7` / `same8` / `same9` — N identical characters in a row
-
-### End of address
-- `suffix4`…`suffix8` — last N characters are identical
-
-### Start of address
-- `prefix4`…`prefix8` — first N characters are identical
-
-### Sequences
-- `seq12345` / `seq123456` — contains a numeric sequence
-- `ascending4` / `ascending5`, `descending4` / `descending5`
-
-### Palindromes
-- `palindrome6` / `palindrome8` / `palindrome12` / `palindrome20`, `symmetric`
-
-### Repeats
-- `repeat2x3` / `repeat3x3`
-
-### Word list
-- `word` — address contains a word from the list
-
-### Custom pattern
-- In the app — any string (prefix/suffix/contains), with an optional case-sensitive toggle
-
-### Any
-- `all` — any condition from the list above
-
-### For TON (base64 addresses)
-- `same7` / `prefix5` / `pairs10` / `repeat2x3` / `word`
-
-## Be careful with custom patterns
-
-The shorter and more "popular" a pattern, the more often it matches — a short 2-3 character prefix comes up very often (with a 16-character hex alphabet, a two-character prefix is 1 in 256 addresses). The app caps how many finds it processes in detail per session, but you should still be careful with very broad patterns: start with 4+ characters and don't leave a search running for long if you're not sure how rare the pattern actually is.
-
-## Save file structure
-
-The app keeps finds in `~/Library/Application Support/VanityForge/results/` (the "Results folder" button in the feed and in History); the command-line scripts use `results/` next to themselves. Finds are never stored inside the `.app` — rebuilding the bundle would wipe them.
+## Repository layout
 
 ```
-results/
-├── sol/
-│   ├── same5/
-│   │   └── 20250205_143022_GxCRRRRR.txt
-│   └── word/
-├── eth/
-├── trx/
-└── ton/
+app/                     macOS app (SwiftUI) and build scripts (app/scripts)
+engines/ethvanity/       Rust, CPU: EVM wallets, CREATE2/CREATE3, TON subwallets
+engines/metalvanity/     Swift + Metal, GPU: CREATE2/CREATE3
+engines/metalvanity-evm/ Rust + Metal, GPU: EVM and TRON wallets
+python/                  bridge.py (app ↔ engines), CLI main.py, create2/splitkey/tonsub
+docs/                    roadmap, demo
 ```
-
-Each file contains: network, address, private key, conditions, time found.
-
-**Private keys are stored in these files in plain text.** This is an address-generation tool, not a wallet — move any keys you find into secure storage (a hardware wallet, a password manager) and don't keep `results/` around longer than you need to.
-
-## Performance (M4 Mac, 1 core)
-
-| Network | addr/s | Algorithm |
-|---------|--------|-----------|
-| Solana | ~15,000 | Ed25519 (solders) |
-| EVM | ~41,000 | secp256k1 (coincurve) |
-| EVM (`ethvanity`) | ~280,000 | secp256k1, incremental point addition |
-| Tron | ~40,000 | secp256k1 + Base58 |
-| TON | ~50,000 | tonsdk |
-
-More detail — [PERFORMANCE.md](PERFORMANCE.md).
 
 ## License
 

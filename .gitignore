@@ -1,50 +1,36 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.egg-info/
-dist/
-build/
-*.egg
-.eggs/
+.mypy_cache/
+.pytest_cache/
 
 # Virtual environments
 venv/
 venv_pypy/
 .env
 
-# IDE
+# IDE / system
 .idea/
 .vscode/
 *.swp
-*.swo
 *~
+.DS_Store
 
-# Type checking
-.mypy_cache/
-.pytest_cache/
-
-# Project output
+# Finds (private keys in plain text) — never commit
 results/
 KEYFOUNDKEYFOUND.txt
 
-# System
-.DS_Store
-Thumbs.db
+# Engine build output
+engines/*/target/
+engines/metalvanity/build/
 
-# Audio test files
-*.mp3
-
-# Rust build artifacts
-ethvanity/target/
-metalvanity/evm/target/
-
-# Downloaded standalone Python runtime + build-time deps (fetched by
-# Scripts/setup_runtime.sh, not committed — see README for setup)
+# Standalone Python runtime downloaded by app/scripts/setup_runtime.sh
 build_cache/
 
-# Swift build artifacts / assembled app / disk image
-VanityForge/.build/
-VanityForge/VanityForge.app/
-VanityForge/*.dmg
-VanityForge/Resources/dmg_background.png
+# Swift build output, assembled app and disk image
+app/.build/
+app/VanityForge.app/
+app/*.dmg
+app/.dmg_staging/
+app/.VanityForge_rw.dmg
+app/Resources/dmg_background.png
