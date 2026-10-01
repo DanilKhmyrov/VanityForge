@@ -38,7 +38,9 @@ def base58check_encode(payload: bytes, version_byte: int = 0x41) -> str:
         n, r = divmod(n, 58)
         result.append(BASE58_ALPHABET[r])
 
-    return "T" + "1" * leading_zeros + "".join(reversed(result))
+    # Ведущую «T» даёт сам байт версии 0x41 — дописывать её отдельно нельзя
+    # (раньше так и было, и все TRON-адреса выходили с лишней T, 35 символов).
+    return "1" * leading_zeros + "".join(reversed(result))
 
 
 class NetworkGenerator(Protocol):
