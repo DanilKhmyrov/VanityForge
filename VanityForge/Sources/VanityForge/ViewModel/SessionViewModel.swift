@@ -248,7 +248,13 @@ final class SessionViewModel {
             return catalog.customPatternRarity(pattern: trimmedCustomPattern, mode: customPatternMode,
                                                networks: selectedNetworks, caseSensitive: customPatternCaseSensitive)
         }
-        return availablePresets.first(where: { $0.key == selectedPreset })?.rarity1In
+        return availablePresets.first(where: { $0.key == selectedPreset }).flatMap(presetRarity)
+    }
+
+    /// Редкость пресета; для «Слово из списка» — по реально выбранным словам.
+    func presetRarity(_ preset: PresetItem) -> UInt64? {
+        if preset.key == "word" { return catalog.wordRarity(words: activeWords, networks: selectedNetworks) }
+        return preset.rarity1In
     }
 
     /// Вероятность, что за уже проверенное число адресов нашлось хотя бы одно

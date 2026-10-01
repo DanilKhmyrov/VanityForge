@@ -336,7 +336,7 @@ private struct ConditionDropdown: View {
                         ForEach(session.availablePresets) { option in
                             ConditionRow(
                                 description: option.description,
-                                rarity: option.rarity1In,
+                                rarity: session.presetRarity(option),
                                 isSelected: session.selectedPreset == option.key
                             ) {
                                 session.selectedPreset = option.key

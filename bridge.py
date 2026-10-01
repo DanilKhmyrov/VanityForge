@@ -793,6 +793,23 @@ def generate_vanity_json(networks: List[str], preset_key: str,
 
 ALPHABET_SIZES = {"sol": 58, "eth": 16, "trx": 58, "ton": 64}
 BODY_LENGTHS = {"sol": 44, "eth": 40, "trx": 34, "ton": 46}
+_BASE58 = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+# Символы, которые вообще встречаются в адресе сети (ETH сравнивается в нижнем
+# регистре): слово с другими символами никогда не совпадёт и в оценку не идёт.
+ALPHABET_CHARS = {
+    "eth": set("0123456789abcdef"),
+    "sol": _BASE58,
+    "trx": _BASE58,
+    "ton": set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"),
+}
+
+
+def word_rarity(words, network: str) -> Optional[int]:
+    """«1 из N» для условия «слово в начале или в конце» по данному списку слов."""
+    alphabet = ALPHABET_SIZES.get(network, 58)
+    chars = ALPHABET_CHARS.get(network)
+    total_p = sum(2 * (alphabet ** -len(w)) for w in words if w and (chars is None or set(w) <= chars))
+    return int(1 / total_p) if total_p > 0 else None
 
 
 def _poisson_tail_rarity(mean: float, k: int) -> Optional[int]:
@@ -821,8 +838,7 @@ def estimate_rarity(preset_key: str, network: str) -> Optional[int]:
     if preset_key == "deadprefixsuffix":
         return alphabet ** 8
     if preset_key == "word":
-        total_p = sum(2 * (alphabet ** -len(w)) for w in patterns.SEARCH_WORDS)
-        return int(1 / total_p) if total_p > 0 else None
+        return word_rarity(patterns.SEARCH_WORDS, network)
     if preset_key == "same6":
         mean = body_len * (alphabet ** -5)
         return int(1 / mean) if mean > 0 else None

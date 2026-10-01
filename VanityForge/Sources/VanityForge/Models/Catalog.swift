@@ -73,6 +73,35 @@ final class AppCatalog {
         return (presetsByNetwork[referenceNet] ?? []).filter { commonKeys.contains($0.key) }
     }
 
+    private static let base58 = Set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+    /// Символы адреса сети (ETH — в нижнем регистре, так их сравнивает bridge.py):
+    /// слово с другими символами не совпадёт никогда и в оценку не входит.
+    private static let alphabetChars: [String: Set<Character>] = [
+        "eth": Set("0123456789abcdef"),
+        "sol": base58,
+        "trx": base58,
+        "ton": Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"),
+    ]
+
+    /// «1 из N» для условия «слово в начале или в конце адреса» по выбранным
+    /// словам — на самой частой из выбранных сетей. Оценка из bridge.py
+    /// считается один раз для стандартного списка и выбор слов не учитывает.
+    func wordRarity(words: [String], networks: Set<String>) -> UInt64? {
+        var worst = 0.0
+        for net in networks {
+            let alphabet = Double(alphabetSizes[net] ?? 58)
+            let chars = Self.alphabetChars[net]
+            let probability = words
+                .filter { word in !word.isEmpty && (chars.map { allowed in word.allSatisfy { allowed.contains($0) } } ?? true) }
+                .reduce(0.0) { $0 + 2 * pow(alphabet, -Double($1.count)) }
+            worst = max(worst, probability)
+        }
+        guard worst > 0 else { return nil }
+        let rarity = 1 / worst
+        guard rarity.isFinite, rarity < Double(UInt64.max) else { return nil }
+        return UInt64(rarity)
+    }
+
     /// Оценка «1 из N» для своего паттерна на самой "щедрой" (частой) из
     /// выбранных сетей — то есть худший/самый частый случай, чтобы
     /// предупреждение было консервативным, а не оптимистичным.
