@@ -172,6 +172,9 @@ final class SessionViewModel {
     /// нахождения ("1 : N" → "≈ столько-то времени"), сохраняется между
     /// запусками приложения.
     var lastMeasuredSpeed: Double?
+    /// Скорость кошельков на видеокарте — в сотни раз выше CPU, поэтому хранится
+    /// отдельно: иначе оценка для условия, которое пойдёт на процессор, врала бы.
+    var lastMeasuredGPUSpeed: Double?
     /// Перебор salt для CREATE2 в разы быстрее перебора ключей — его скорость
     /// меряется и хранится отдельно, иначе оценки времени врали бы в обе стороны.
     var lastMeasuredCreate2Speed: Double?
@@ -184,7 +187,7 @@ final class SessionViewModel {
         switch (searchMode, contractKind) {
         case (.contracts, .create2): last = lastMeasuredCreate2Speed
         case (.contracts, .create3): last = lastMeasuredCreate3Speed
-        default: last = lastMeasuredSpeed
+        default: last = willUseGPU ? (lastMeasuredGPUSpeed ?? lastMeasuredSpeed) : lastMeasuredSpeed
         }
         if speedEstimateAuto, let last, last > 0 { return last }
         let cleaned = manualSpeedText.filter { $0.isNumber || $0 == "." }
@@ -240,6 +243,15 @@ final class SessionViewModel {
     }
 
     var isRunning: Bool { phase != .idle }
+
+    /// Пойдёт ли текущий поиск кошельков на видеокарту: GPU-движок знает EVM и TRON.
+    var willUseGPU: Bool {
+        useGPU && !fakeMode && !selectedNetworks.isEmpty && selectedNetworks.isSubset(of: ["eth", "trx"])
+    }
+
+    static var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
 
     /// Свой паттерн может встретиться хотя бы в одной из выбранных сетей.
     var customPatternPossible: Bool {
@@ -353,6 +365,7 @@ final class SessionViewModel {
         var customPatternMode: String
         var customPatternCaseSensitive: Bool?
         var lastMeasuredSpeed: Double?
+        var lastMeasuredGPUSpeed: Double?
         var speedEstimateAuto: Bool?
         var manualSpeedText: String?
         var language: String?
@@ -393,6 +406,7 @@ final class SessionViewModel {
             customPatternMode: customPatternMode.rawValue,
             customPatternCaseSensitive: customPatternCaseSensitive,
             lastMeasuredSpeed: lastMeasuredSpeed,
+            lastMeasuredGPUSpeed: lastMeasuredGPUSpeed,
             speedEstimateAuto: speedEstimateAuto,
             manualSpeedText: manualSpeedText,
             language: language.rawValue,
@@ -431,6 +445,13 @@ final class SessionViewModel {
         if let mode = CustomPatternMode(rawValue: settings.customPatternMode) { customPatternMode = mode }
         customPatternCaseSensitive = settings.customPatternCaseSensitive ?? false
         lastMeasuredSpeed = settings.lastMeasuredSpeed
+        lastMeasuredGPUSpeed = settings.lastMeasuredGPUSpeed
+        // До 1.2.2 скорость GPU-прогонов писалась в общую ячейку; CPU здесь
+        // не выдаёт и 10 млн/с, так что такое значение — точно от видеокарты.
+        if lastMeasuredGPUSpeed == nil, let speed = lastMeasuredSpeed, speed > 10_000_000 {
+            lastMeasuredGPUSpeed = speed
+            lastMeasuredSpeed = nil
+        }
         speedEstimateAuto = settings.speedEstimateAuto ?? true
         manualSpeedText = settings.manualSpeedText ?? ""
         if let lang = settings.language.flatMap(AppLanguage.init(rawValue:)) { language = lang }
@@ -556,6 +577,8 @@ final class SessionViewModel {
                 let speed = Double(e.totalChecked) / e.elapsedSeconds
                 if let net = started?.networks.first, let kind = ContractKind(rawValue: net) {
                     if kind == .create3 { lastMeasuredCreate3Speed = speed } else { lastMeasuredCreate2Speed = speed }
+                } else if started?.gpu.tool == "metal" {
+                    lastMeasuredGPUSpeed = speed
                 } else {
                     lastMeasuredSpeed = speed
                 }

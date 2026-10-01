@@ -55,6 +55,12 @@ struct StatsDashboardView: View {
                 chip("\(workers) \(session.t(.unitProcesses))", icon: "cpu", color: .white)
             }
 
+            if session.isRunning, session.searchMode == .wallets, session.useGPU,
+               session.started?.fake == false, session.started?.gpu.tool != "metal" {
+                chip(session.t(.cpuOnlyChip), icon: "cpu", color: .orange)
+                    .help(session.t(.cpuOnlyHelp))
+            }
+
             if session.keepsAwake {
                 chip(session.t(.keepAwakeChip), icon: "cup.and.saucer.fill", color: .orange)
                     .help(session.t(.keepAwakeHelp))

@@ -4,6 +4,8 @@ import SwiftUI
 struct GPUToggle: View {
     @Environment(SessionViewModel.self) private var session
     let hint: String
+    /// Текущее условие на GPU не пойдёт — показать это до старта.
+    var cpuFallback = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -40,6 +42,12 @@ struct GPUToggle: View {
                     }
                 }
                 .disabled(session.isRunning)
+            }
+            if session.useGPU && cpuFallback {
+                Label(session.t(.gpuNotUsedNote), systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text(hint)
                 .font(.system(size: 10))

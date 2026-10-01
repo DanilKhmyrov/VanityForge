@@ -161,6 +161,9 @@ enum L: String {
     case splitKeyTweak
     case splitKeyBadge
     case useGPU
+    case gpuNotUsedNote
+    case cpuOnlyChip
+    case cpuOnlyHelp
     case patternImpossible
     case checkBalance
     case checkBalanceHelp
@@ -348,8 +351,11 @@ enum L: String {
         .checkBalanceHelp: [.ru: "Адрес отправится в публичные RPC-узлы — поэтому только по нажатию", .en: "The address is sent to public RPC nodes — so only on click"],
         .balanceFailed: [.ru: "не удалось получить баланс", .en: "couldn't get the balance"],
         .patternImpossible: [.ru: "Таких символов нет в адресах выбранных сетей — совпадение невозможно (см. «?»)", .en: "These characters never occur in addresses of the selected networks — no match is possible (see \"?\")"],
+        .gpuNotUsedNote: [.ru: "Solana и TON видеокарта не умеет — поиск пойдёт на процессоре, в сотни раз медленнее", .en: "The GPU can't do Solana or TON — the search runs on the CPU, hundreds of times slower"],
+        .cpuOnlyChip: [.ru: "на процессоре", .en: "on the CPU"],
+        .cpuOnlyHelp: [.ru: "Видеокарта включена, но это условие она не умеет — считает процессор", .en: "The GPU is on, but it can't do this condition — the CPU is searching"],
         .useGPU: [.ru: "Считать на видеокарте", .en: "Use the GPU"],
-        .useGPUHintWallets: [.ru: "Metal: EVM и TRON (и для split-key) в 15–30 раз быстрее. Solana, TON и «содержит» считаются на процессоре.", .en: "Metal: EVM and TRON (split-key too) 15–30× faster. Solana, TON and \"contains\" run on the CPU."],
+        .useGPUHintWallets: [.ru: "Metal: EVM и TRON (и для split-key) в 15–30 раз быстрее, «содержит» — в сотни. Solana и TON считаются на процессоре.", .en: "Metal: EVM and TRON (split-key too) 15–30× faster, \"contains\" hundreds of times. Solana and TON run on the CPU."],
         .useGPUHintContracts: [.ru: "Metal, в ~5 раз быстрее процессора. Выключите, если видеокарта нужна под другое.", .en: "Metal, about 5× faster than the CPU. Turn off if you need the GPU for something else."],
         .sectionKind: [.ru: "Способ развёртывания", .en: "Deployment method"],
         .unitAttemptsPerSec: [.ru: "попыток/с", .en: "tries/s"],

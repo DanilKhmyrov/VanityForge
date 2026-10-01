@@ -42,7 +42,7 @@ struct NetworkPresetPicker: View {
                             settingsCard {
                                 SplitKeyControl()
                                 cardDivider
-                                GPUToggle(hint: session.t(.useGPUHintWallets))
+                                GPUToggle(hint: session.t(.useGPUHintWallets), cpuFallback: !session.willUseGPU && !session.fakeMode)
                                 cardDivider
                                 workerControl
                                 cardDivider
@@ -147,9 +147,16 @@ struct NetworkPresetPicker: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("VanityForge")
                     .font(.system(size: 20, weight: .bold, design: .rounded))
-                Text(session.t(.appSubtitle))
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(session.t(.appSubtitle))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                    Text("v\(SessionViewModel.appVersion)")
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }
