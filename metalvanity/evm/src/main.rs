@@ -14,6 +14,7 @@
 //! из разных цепочек между собой никак не связаны.
 //!
 //!   metalvanity-evm --target dead:beef [--target :0000 ...] [--prefix dead] [--suffix beef]
+//!                   [--tron-target TXyz:abc ...] [--split-key <публичный ключ заказчика>]
 //!                   [--threads N] [--batch B] [--reseed-secs S]
 //!                   [--gpu-load 1..100] [--max-speed адресов/с]
 //!
@@ -23,15 +24,23 @@
 //!
 //! Цель — «начало:конец» в hex (любая часть может быть пустой); адрес подходит,
 //! если совпал хотя бы с одной целью. Итоговую проверку условия делает bridge.py.
+//!
+//! --tron-target — то же для TRON, в base58 («начало» включает ведущую T, конец —
+//! до 10 символов). У TRON и EVM из одного ключа одинаковые 20 байт адреса, так что
+//! обе сети проверяются на одном и том же кандидате.
+//!
+//! --split-key: точки — P_заказчика + k·G, в находке вместо приватного ключа
+//! добавка k (как у ethvanity --split-key); ключ адреса знает только заказчик.
 //!   metalvanity-evm --self-test
 //!
 //! Вывод — построчный JSON, как у ethvanity:
-//!   {"type":"found","address":"0x...","private_key":"..."}
+//!   {"type":"found","network":"eth","address":"0x...","private_key":"..."}
 //!   {"type":"stats","checked":123456}
 
 use metal::{CompileOptions, Device, MTLResourceOptions, MTLSize};
 use secp256k1::rand::rngs::OsRng;
 use secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
+use sha2::{Digest, Sha256};
 use std::env;
 use std::ffi::c_void;
 use std::io::Write;
@@ -133,11 +142,138 @@ fn unpack(words: &[u32]) -> [u8; 20] {
     out
 }
 
+// ---- TRON: base58check(0x41 ++ адрес ++ первые 4 байта sha256(sha256(...))) ----
+
+const B58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const TRON_LEN: usize = 34;
+const MAX_TRON_SUFFIX: usize = 10;
+
+fn b58_digit(c: char) -> Option<u32> {
+    B58.iter().position(|&b| b as char == c).map(|d| d as u32)
+}
+
+fn b58_encode(bytes: &[u8]) -> String {
+    let mut digits: Vec<u8> = Vec::new();
+    for &byte in bytes {
+        let mut carry = byte as u32;
+        for d in digits.iter_mut() {
+            carry += (*d as u32) << 8;
+            *d = (carry % 58) as u8;
+            carry /= 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let zeros = bytes.iter().take_while(|&&b| b == 0).count();
+    std::iter::repeat('1')
+        .take(zeros)
+        .chain(digits.iter().rev().map(|&d| B58[d as usize] as char))
+        .collect()
+}
+
+fn tron_address(addr: &[u8; 20]) -> String {
+    let mut payload = vec![0x41u8];
+    payload.extend_from_slice(addr);
+    let checksum = Sha256::digest(Sha256::digest(&payload));
+    payload.extend_from_slice(&checksum[..4]);
+    b58_encode(&payload)
+}
+
+/// Значение base58-строки как 25-байтное число big-endian; None — не влезло.
+fn b58_value(s: &str) -> Option<[u8; 25]> {
+    let mut n = [0u8; 26];
+    for c in s.chars() {
+        let mut carry = b58_digit(c)?;
+        for byte in n.iter_mut().rev() {
+            carry += (*byte as u32) * 58;
+            *byte = (carry & 0xff) as u8;
+            carry >>= 8;
+        }
+        if carry != 0 {
+            return None;
+        }
+    }
+    if n[0] != 0 {
+        return None;
+    }
+    let mut out = [0u8; 25];
+    out.copy_from_slice(&n[1..]);
+    Some(out)
+}
+
+/// Старшие 21 байт (0x41 ++ адрес) как 6 слов big-endian, как в ядре.
+fn top21_words(n: &[u8; 25]) -> [u32; 6] {
+    let mut w = [0u32; 6];
+    w[0] = n[0] as u32;
+    for i in 0..5 {
+        w[1 + i] = u32::from_be_bytes(n[1 + 4 * i..5 + 4 * i].try_into().unwrap());
+    }
+    w
+}
+
+struct TronTarget {
+    prefix: String,
+    suffix: String,
+}
+
+impl TronTarget {
+    fn parse(raw: &str) -> TronTarget {
+        let (prefix, suffix) = raw.split_once(':').unwrap_or((raw, ""));
+        let valid = |s: &str| s.chars().all(|c| b58_digit(c).is_some());
+        if !valid(prefix) || !valid(suffix) {
+            fail("tron target must be base58");
+        }
+        if prefix.len() > TRON_LEN || suffix.len() > MAX_TRON_SUFFIX {
+            fail("tron target too long (prefix ≤ 34, suffix ≤ 10)");
+        }
+        TronTarget { prefix: prefix.to_string(), suffix: suffix.to_string() }
+    }
+
+    fn matches(&self, address: &str) -> bool {
+        address.starts_with(&self.prefix) && address.ends_with(&self.suffix)
+    }
+
+    /// 20 слов для ядра (раскладка — в комментарии к check() в kernel.metal).
+    fn words(&self) -> [u32; 20] {
+        let mut w = [0u32; 20];
+        if !self.prefix.is_empty() {
+            w[0] |= 1;
+            let fill = TRON_LEN - self.prefix.len();
+            let lo = b58_value(&(self.prefix.clone() + &"1".repeat(fill)));
+            let hi = b58_value(&(self.prefix.clone() + &"z".repeat(fill)));
+            // Верх, не влезший в 25 байт, — до максимума; низ — цель невозможна.
+            let (lo, hi) = match lo {
+                Some(lo) => (top21_words(&lo), top21_words(&hi.unwrap_or([0xff; 25]))),
+                None => ([u32::MAX; 6], [0u32; 6]),
+            };
+            w[2..8].copy_from_slice(&lo);
+            w[8..14].copy_from_slice(&hi);
+        }
+        if !self.suffix.is_empty() {
+            w[0] |= 2;
+            let k = self.suffix.len() as u32;
+            let value = self.suffix.chars().fold(0u64, |acc, c| acc * 58 + b58_digit(c).unwrap() as u64);
+            let m29 = 29u64.pow(k);
+            let r29 = value % m29;
+            w[1] = k;
+            w[14] = (value & ((1u64 << k) - 1)) as u32;
+            w[15] = r29 as u32;
+            w[16] = (r29 >> 32) as u32;
+            w[17] = m29 as u32;
+            w[18] = (m29 >> 32) as u32;
+        }
+        w
+    }
+}
+
 struct Hit {
     thread: u32,
     run: u64,
     j: u32, // смещение в окне 0..2B
     address: [u8; 20],
+    network: u32, // 0 — EVM, 1 — TRON
 }
 
 struct Gpu {
@@ -153,7 +289,7 @@ struct Gpu {
 }
 
 impl Gpu {
-    fn new(threads: u32, batch: u32, capacity: u32, start: &[PublicKey], patterns: &[Pattern]) -> Gpu {
+    fn new(threads: u32, batch: u32, capacity: u32, start: &[PublicKey], patterns: &[Pattern], tron: &[TronTarget]) -> Gpu {
         let device = Device::system_default().unwrap_or_else(|| fail("no Metal device"));
         let library = device
             .new_library_with_source(KERNEL, &CompileOptions::new())
@@ -181,6 +317,10 @@ impl Gpu {
         for (value, mask) in patterns {
             cfg.extend(pack(value));
             cfg.extend(pack(mask));
+        }
+        cfg.push(tron.len() as u32);
+        for target in tron {
+            cfg.extend(target.words());
         }
 
         let slots = (0..2)
@@ -230,7 +370,7 @@ impl Gpu {
         let words = unsafe { std::slice::from_raw_parts(out.contents() as *const u32, count * 8) };
         words
             .chunks(8)
-            .map(|w| Hit { thread: w[0], run, j: w[1], address: unpack(&w[2..7]) })
+            .map(|w| Hit { thread: w[0], run, j: w[1], address: unpack(&w[2..7]), network: w[7] })
             .collect()
     }
 }
@@ -238,61 +378,117 @@ impl Gpu {
 struct Keys {
     starts: Vec<SecretKey>,
     batch: u32,
+    /// Split-key: публичный ключ заказчика P; точки — P + k·G, находка — k.
+    base: Option<PublicKey>,
 }
 
 impl Keys {
-    fn random(threads: u32, batch: u32) -> Keys {
-        Keys { starts: (0..threads).map(|_| SecretKey::new(&mut OsRng)).collect(), batch }
+    fn random(threads: u32, batch: u32, base: Option<PublicKey>) -> Keys {
+        Keys { starts: (0..threads).map(|_| SecretKey::new(&mut OsRng)).collect(), batch, base }
     }
 
     fn window(&self) -> u128 {
         2 * self.batch as u128 + 1
     }
 
-    /// k_t + run·(2B+1) + смещение в окне.
+    /// k_t + run·(2B+1) + смещение в окне (в split-key — добавка к ключу заказчика).
     fn key(&self, hit: &Hit) -> SecretKey {
         let offset = hit.run as u128 * self.window() + hit.j as u128;
         self.starts[hit.thread as usize].add_tweak(&scalar_u128(offset)).unwrap()
     }
 
-    /// Центры первых окон: (k_t + B)·G.
+    fn public(&self, secp: &Secp256k1<secp256k1::All>, key: &SecretKey) -> PublicKey {
+        let own = PublicKey::from_secret_key(secp, key);
+        match self.base {
+            Some(base) => base.combine(&own).unwrap_or_else(|_| fail("split-key point at infinity")),
+            None => own,
+        }
+    }
+
+    /// Центры первых окон: (k_t + B)·G (+ P в split-key).
     fn points(&self) -> Vec<PublicKey> {
         let secp = Secp256k1::new();
         let shift = scalar_u128(self.batch as u128);
-        self.starts
-            .iter()
-            .map(|k| PublicKey::from_secret_key(&secp, &k.add_tweak(&shift).unwrap()))
-            .collect()
+        self.starts.iter().map(|k| self.public(&secp, &k.add_tweak(&shift).unwrap())).collect()
     }
 }
 
-fn verify(secp: &Secp256k1<secp256k1::All>, keys: &Keys, hit: &Hit, patterns: &[Pattern]) -> SecretKey {
+/// Пересчитывает находку на CPU. Расхождение адреса — ошибка GPU; для TRON
+/// диапазон начала на GPU чуть шире точного условия, такие «почти» тихо отсеиваются.
+fn verify(
+    secp: &Secp256k1<secp256k1::All>,
+    keys: &Keys,
+    hit: &Hit,
+    patterns: &[Pattern],
+    tron: &[TronTarget],
+) -> Option<(SecretKey, String)> {
     let key = keys.key(hit);
-    let address = eth_address(&PublicKey::from_secret_key(secp, &key));
-    let matches = patterns.iter().any(|(value, mask)| (0..20).all(|i| address[i] & mask[i] == value[i]));
-    if address != hit.address || !matches {
+    let address = eth_address(&keys.public(secp, &key));
+    if address != hit.address {
         fail(&format!("GPU result mismatch: thread {} run {} j {}", hit.thread, hit.run, hit.j));
     }
-    key
+    if hit.network == 1 {
+        let text = tron_address(&address);
+        return tron.iter().any(|t| t.matches(&text)).then_some((key, text));
+    }
+    if !patterns.iter().any(|(value, mask)| (0..20).all(|i| address[i] & mask[i] == value[i])) {
+        fail(&format!("GPU pattern mismatch: thread {} run {} j {}", hit.thread, hit.run, hit.j));
+    }
+    Some((key, format!("0x{}", to_hex(&address))))
 }
 
 fn self_test() -> ! {
     let (threads, batch) = (512u32, 64u32);
-    let capacity = threads * (2 * batch + 1);
-    let keys = Keys::random(threads, batch);
-    let patterns = [([0u8; 20], [0u8; 20])];
-    let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &patterns);
+    let window = 2 * batch + 1;
+    let capacity = threads * window * 2;
     let secp = Secp256k1::new();
-    for run in 0..3u64 {
+    let everything = [([0u8; 20], [0u8; 20])];
+
+    // EVM: каждый кандидат — совпадение; обычный режим и split-key.
+    let client = PublicKey::from_secret_key(&secp, &SecretKey::new(&mut OsRng));
+    for (name, base) in [("evm", None), ("evm split-key", Some(client))] {
+        let keys = Keys::random(threads, batch, base);
+        let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &everything, &[]);
+        for run in 0..3u64 {
+            let command = gpu.submit(0);
+            let hits = gpu.collect(0, &command, run);
+            if hits.len() != (threads * window) as usize {
+                fail(&format!("{name} run {run}: expected {} hits, got {}", threads * window, hits.len()));
+            }
+            for hit in &hits {
+                verify(&secp, &keys, hit, &everything, &[]);
+            }
+            println!("{{\"type\":\"self_test\",\"case\":\"{name}\",\"run\":{run},\"checked\":{},\"ok\":true}}", hits.len());
+        }
+    }
+
+    // TRON: GPU должен найти ровно то, что находит CPU перебором всех кандидатов.
+    let tron = [TronTarget::parse("TX:"), TronTarget::parse(":a"), TronTarget::parse("TR:z")];
+    let keys = Keys::random(threads, batch, None);
+    let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &[], &tron);
+    for run in 0..2u64 {
         let command = gpu.submit(0);
-        let hits = gpu.collect(0, &command, run);
-        if hits.len() != capacity as usize {
-            fail(&format!("run {run}: expected {capacity} hits, got {}", hits.len()));
+        let mut found: Vec<String> = gpu
+            .collect(0, &command, run)
+            .iter()
+            .filter_map(|hit| verify(&secp, &keys, hit, &[], &tron).map(|(_, a)| a))
+            .collect();
+        let mut expected: Vec<String> = Vec::new();
+        for t in 0..threads {
+            for j in 0..window {
+                let hit = Hit { thread: t, run, j, address: [0; 20], network: 1 };
+                let text = tron_address(&eth_address(&keys.public(&secp, &keys.key(&hit))));
+                if tron.iter().any(|target| target.matches(&text)) {
+                    expected.push(text);
+                }
+            }
         }
-        for hit in &hits {
-            verify(&secp, &keys, hit, &patterns);
+        found.sort();
+        expected.sort();
+        if found != expected {
+            fail(&format!("tron run {run}: GPU found {}, CPU expected {}", found.len(), expected.len()));
         }
-        println!("{{\"type\":\"self_test\",\"run\":{run},\"checked\":{},\"ok\":true}}", hits.len());
+        println!("{{\"type\":\"self_test\",\"case\":\"tron\",\"run\":{run},\"matched\":{},\"ok\":true}}", found.len());
     }
     std::process::exit(0);
 }
@@ -316,11 +512,23 @@ fn main() {
     if !prefix.is_empty() || !suffix.is_empty() {
         patterns.push(pattern(&prefix, &suffix));
     }
-    if patterns.is_empty() {
-        eprintln!("usage: metalvanity-evm --target <prefix>:<suffix> [...] [--threads N] [--batch B]");
+    let tron: Vec<TronTarget> = args
+        .windows(2)
+        .filter(|w| w[0] == "--tron-target")
+        .map(|w| TronTarget::parse(&w[1]))
+        .collect();
+    let split_base = value_of("--split-key").map(|raw| {
+        let hex = raw.trim().trim_start_matches("0x");
+        let bytes: Option<Vec<u8>> = (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
+        bytes
+            .and_then(|b| PublicKey::from_slice(&b).ok())
+            .unwrap_or_else(|| fail("--split-key must be a secp256k1 public key (33 or 65 bytes hex)"))
+    });
+    if patterns.is_empty() && tron.is_empty() {
+        eprintln!("usage: metalvanity-evm --target <prefix>:<suffix> [--tron-target <prefix>:<suffix>] [...]");
         std::process::exit(1);
     }
-    if patterns.len() > MAX_PATTERNS {
+    if patterns.len() > MAX_PATTERNS || tron.len() > MAX_PATTERNS {
         fail("too many targets");
     }
     let threads = value_of("--threads").and_then(|v| v.parse().ok()).unwrap_or(16384u32).max(1);
@@ -331,8 +539,8 @@ fn main() {
         max_speed: value_of("--max-speed").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).max(0.0),
     };
 
-    let mut keys = Keys::random(threads, batch);
-    let gpu = Gpu::new(threads, batch, 1024, &keys.points(), &patterns);
+    let mut keys = Keys::random(threads, batch, split_base);
+    let gpu = Gpu::new(threads, batch, 1024, &keys.points(), &patterns, &tron);
     let secp = Secp256k1::new();
     let per_run = threads as u64 * (2 * batch as u64 + 1);
 
@@ -340,7 +548,7 @@ fn main() {
     let (reseed_tx, reseed_rx) = mpsc::sync_channel::<(Keys, Vec<PublicKey>)>(1);
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(reseed_secs));
-        let fresh = Keys::random(threads, batch);
+        let fresh = Keys::random(threads, batch, split_base);
         let points = fresh.points();
         if reseed_tx.send((fresh, points)).is_err() {
             return;
@@ -349,12 +557,13 @@ fn main() {
 
     let report = |hits: Vec<Hit>, keys: &Keys| {
         for hit in hits {
-            let key = verify(&secp, keys, &hit, &patterns);
-            println!(
-                "{{\"type\":\"found\",\"address\":\"0x{}\",\"private_key\":\"{}\"}}",
-                to_hex(&hit.address),
-                to_hex(&key.secret_bytes())
-            );
+            if let Some((key, address)) = verify(&secp, keys, &hit, &patterns, &tron) {
+                let network = if hit.network == 1 { "trx" } else { "eth" };
+                println!(
+                    "{{\"type\":\"found\",\"network\":\"{network}\",\"address\":\"{address}\",\"private_key\":\"{}\"}}",
+                    to_hex(&key.secret_bytes())
+                );
+            }
         }
     };
 

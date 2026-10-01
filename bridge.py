@@ -305,42 +305,50 @@ def ethvanity_worker(
     result_queue: "mp.Queue",
     stats_counter,
     stop_event,
-    extra_prefixes: Optional[List[str]] = None,
+    targets: List[str],
     worker_override: Optional[int] = None,
     split_key: Optional[str] = None,
 ) -> None:
     """Аналог keyhunt_worker для встроенного ethvanity. Проще и надёжнее:
     вывод сразу построчный JSON, не нужно парсить ANSI/regex терминального
-    вывода стороннего инструмента."""
-    hex_prefixes = sorted(set(list(core.ALL_PREFIXES) + list(extra_prefixes or [])))
+    вывода стороннего инструмента. Цели — «начало:конец» в hex, как у GPU-движка
+    (см. eth_hex_targets), поэтому условия на конец адреса тоже ищутся."""
     threads = worker_override or (os.cpu_count() or 4)
 
     cmd = [binary_path, "--threads", str(threads)]
     if split_key:
         cmd += ["--split-key", split_key]
-    for p in hex_prefixes:
-        cmd += ["--prefix", p]
+    for target in targets:
+        cmd += ["--target", target]
 
-    _pump_eth_engine(cmd, preset_key, result_queue, stats_counter, stop_event, verify_key=not split_key)
+    _pump_eth_engine(cmd, preset_key, result_queue, stats_counter, stop_event, split_key=split_key)
 
 
-def _eth_address_of(private_key: str) -> Optional[str]:
+def _engine_address(network: str, key_hex: str, split_key: Optional[str]) -> Optional[str]:
+    """Адрес, который даёт ключ из находки движка, пересчитанный независимо
+    (coincurve). В split-key вместо ключа приходит добавка k — адрес тогда у
+    точки P_заказчика + k·G."""
     try:
-        from coincurve import PrivateKey
-        from Crypto.Hash import keccak
-        pub = PrivateKey(bytes.fromhex(private_key)).public_key.format(compressed=False)[1:]
-        return "0x" + keccak.new(digest_bits=256, data=pub).digest()[12:].hex()
+        import coincurve
+        if split_key:
+            point = coincurve.PublicKey.combine_keys([
+                splitkey.parse_public_key(split_key),
+                coincurve.PublicKey.from_secret(bytes.fromhex(key_hex)),
+            ])
+        else:
+            point = coincurve.PrivateKey(bytes.fromhex(key_hex)).public_key
+        return splitkey.address_for(network, point)
     except Exception:
         return None
 
 
 def _pump_eth_engine(cmd: List[str], preset_key: str, result_queue: "mp.Queue", stats_counter, stop_event,
-                     verify_key: bool = True) -> None:
+                     split_key: Optional[str] = None) -> None:
     """Запускает ETH-движок с построчным JSON (ethvanity / metalvanity-evm) и
     перекачивает его события: stats — в общий счётчик, found — в очередь, если
     адрес проходит Python-предикат выбранного пресета. Ключ находки независимо
     пересчитывается в адрес (coincurve): кошелёк с неверным ключом хуже, чем
-    никакого. В split-key вместо ключа приходит добавка k — там это невозможно."""
+    никакого. GPU-движок присылает и TRON-находки (поле network)."""
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
 
     def _kill_on_stop() -> None:
@@ -349,7 +357,6 @@ def _pump_eth_engine(cmd: List[str], preset_key: str, result_queue: "mp.Queue", 
 
     threading.Thread(target=_kill_on_stop, daemon=True).start()
 
-    presets = PRESETS
     last_checked = 0
 
     for line in iter(proc.stdout.readline, ""):
@@ -369,17 +376,21 @@ def _pump_eth_engine(cmd: List[str], preset_key: str, result_queue: "mp.Queue", 
                     stats_counter.value += delta
                 last_checked = checked
         elif event_type == "found":
-            address = str(payload.get("address", "")).lower()
+            network = str(payload.get("network", "eth"))
+            address = str(payload.get("address", ""))
+            if network == "eth":
+                address = address.lower()
             private_key = str(payload.get("private_key", ""))
-            if verify_key and _eth_address_of(private_key) != address:
+            if _engine_address(network, private_key, split_key) != address:
                 emit({"type": "error", "message": f"engine returned a wrong key for {address}", "fatal": False})
                 continue
+            presets = NETWORK_PRESETS.get(network, PRESETS)
             matched = [
                 name for name, (_, pred) in presets.items()
                 if name != "all" and pred(address)
             ]
             if matched and (preset_key == "all" or preset_key in matched):
-                result_queue.put(("eth", address, private_key, matched, 0))
+                result_queue.put((network, address, private_key, matched, 0))
         elif event_type == "error":
             emit({"type": "error", "message": str(payload.get("message", "engine error")), "fatal": False})
 
@@ -397,10 +408,10 @@ def find_gpu_eth() -> Optional[str]:
     return None
 
 
-def gpu_eth_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]]) -> Optional[List[str]]:
-    """Цели для GPU-движка в виде "начало:конец" (hex) — ровно под выбранный
-    пресет, включая условия на конец адреса, которые префиксные ускорители не
-    умеют. None — условие на GPU не выразить (подстрока, не-hex), нужен CPU.
+def eth_hex_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]]) -> Optional[List[str]]:
+    """Цели для ETH-движков (GPU и ethvanity) в виде "начало:конец" (hex) — ровно
+    под выбранный пресет, включая условия на конец адреса. None — условие так не
+    выразить (подстрока, не-hex), нужен перебор на Python.
     Цели — надмножество: регистр (EIP-55) и остальное проверяет предикат."""
     hex_re = re.compile(r"[0-9a-f]+")
     if preset_key == CUSTOM_KEY:
@@ -427,6 +438,62 @@ def gpu_eth_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bo
     return targets or None
 
 
+MAX_ENGINE_TARGETS = 256
+
+
+def _case_variants(pattern: str, chars: set) -> Optional[List[str]]:
+    """Все написания pattern без учёта регистра, допустимые в алфавите;
+    None — вариантов больше, чем движок принимает целей."""
+    variants = [""]
+    for c in pattern:
+        options = sorted({x for x in (c.lower(), c.upper()) if x in chars})
+        variants = [v + o for v in variants for o in options]
+        if len(variants) > MAX_ENGINE_TARGETS:
+            return None
+    return variants
+
+
+def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]]) -> Optional[List[str]]:
+    """Цели для GPU-движка на TRON: "начало:конец" в base58. Адрес TRON всегда
+    начинается с T (и предикаты смотрят на строку целиком, с T), конец на GPU —
+    до 10 символов. None — условие так не выразить, TRON ищется на CPU."""
+    chars = ALPHABET_CHARS["trx"]
+    valid = lambda s: bool(s) and all(c in chars for c in s)
+    if preset_key == CUSTOM_KEY:
+        if not custom_pattern:
+            return None
+        pattern, mode, case_sensitive = custom_pattern
+        if mode not in ("prefix", "suffix"):
+            return None
+        variants = [pattern] if case_sensitive else _case_variants(pattern, chars)
+        if variants is None:
+            return None
+        variants = [v for v in variants if valid(v)]
+        if mode == "prefix":
+            targets = [f"{v}:" for v in variants if v.startswith("T") and len(v) <= 34]
+        else:
+            if any(len(v) > 10 for v in variants):
+                return None
+            targets = [f":{v}" for v in variants]
+        return targets if 0 < len(targets) <= MAX_ENGINE_TARGETS else None
+
+    words = [w for w in patterns.SEARCH_WORDS if valid(w)]
+    if preset_key in ("word", "all") and any(len(w) > 10 for w in words):
+        return None
+    alphabet = "".join(sorted(chars))
+    by_preset = {
+        "prefix10": ["TTTTTTTTTT:"],
+        "suffix10": [f":{c * 10}" for c in alphabet],
+        "word": [f"{w}:" for w in words if w.startswith("T")] + [f":{w}" for w in words],
+        "deadprefixsuffix": [],  # адрес TRON начинается с T — «dead» в начале невозможен
+    }
+    if preset_key == "all":
+        targets = sorted({t for group in by_preset.values() for t in group})
+    else:
+        targets = by_preset.get(preset_key) or []
+    return targets if 0 < len(targets) <= MAX_ENGINE_TARGETS else None
+
+
 def gpu_limit_args(args: List[str]) -> Tuple[str, ...]:
     """--gpu-load / --max-speed из аргументов bridge.py — как есть передаются GPU-движкам."""
     out: List[str] = []
@@ -440,12 +507,19 @@ def gpu_limit_args(args: List[str]) -> Tuple[str, ...]:
     return tuple(out)
 
 
-def metal_eth_worker(binary_path: str, targets: List[str], preset_key: str, result_queue: "mp.Queue",
-                     stats_counter, stop_event, gpu_limits: Tuple[str, ...] = ()) -> None:
+def metal_eth_worker(binary_path: str, eth_targets: Optional[List[str]], trx_targets: Optional[List[str]],
+                     preset_key: str, result_queue: "mp.Queue", stats_counter, stop_event,
+                     gpu_limits: Tuple[str, ...] = (), split_key: Optional[str] = None) -> None:
+    """GPU-движок проверяет ETH и TRON на одних и тех же кандидатах: у обеих
+    сетей из одного ключа одинаковые 20 байт адреса."""
     cmd = [binary_path] + list(gpu_limits)
-    for target in targets:
+    if split_key:
+        cmd += ["--split-key", split_key]
+    for target in eth_targets or []:
         cmd += ["--target", target]
-    _pump_eth_engine(cmd, preset_key, result_queue, stats_counter, stop_event)
+    for target in trx_targets or []:
+        cmd += ["--tron-target", target]
+    _pump_eth_engine(cmd, preset_key, result_queue, stats_counter, stop_event, split_key=split_key)
 
 
 def fake_found_worker(networks: List[str], preset_key: str, result_queue: "mp.Queue",
@@ -477,30 +551,6 @@ def fake_found_worker(networks: List[str], preset_key: str, result_queue: "mp.Qu
             stats_counter.value += random.randint(2000, 8000)
 
 
-def _keyhunt_can_target_pattern(custom_pattern: Optional[Tuple[str, str, bool]]) -> bool:
-    """True, если keyhunt способен реально искать заданный custom-паттерн
-    (см. подробный комментарий в generate_vanity_json)."""
-    if not custom_pattern:
-        return True
-    pattern, mode, _ = custom_pattern
-    if mode != "prefix":
-        return False
-    if not re.fullmatch(r"[0-9a-fA-F]+", pattern):
-        return False
-    return len(pattern) % 2 == 0
-
-
-def _keyhunt_can_target_all(hex_targets: List[str],
-                             custom_pattern: Optional[Tuple[str, str, bool]]) -> bool:
-    """True, если keyhunt способен покрыть ВЕСЬ набор целей разом: и
-    custom-паттерн, и текущий список слов (см. комментарий в
-    generate_vanity_json — keyhunt тихо роняет любую нечётную по длине
-    hex-цель, не сообщая об этом ничем, кроме строки в собственном логе)."""
-    if not _keyhunt_can_target_pattern(custom_pattern):
-        return False
-    return all(len(t) % 2 == 0 for t in hex_targets)
-
-
 def generate_vanity_json(networks: List[str], preset_key: str,
                           fake_found_interval: Optional[float] = None,
                           worker_override: Optional[int] = None,
@@ -510,7 +560,6 @@ def generate_vanity_json(networks: List[str], preset_key: str,
                           split_key: Optional[str] = None,
                           engine_pref: str = "auto",
                           gpu_limits: Tuple[str, ...] = ()) -> None:
-    extra_hex_prefixes: List[str] = []
     if split_key:
         unsupported = [n for n in networks if n not in splitkey.NETWORKS_SUPPORTED]
         try:
@@ -527,23 +576,9 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         pattern, mode, case_sensitive = custom_pattern
         install_custom_preset(pattern, mode, case_sensitive=case_sensitive, lang=lang)
         preset_key = CUSTOM_KEY
-        if mode == "prefix" and re.fullmatch(r"[0-9a-fA-F]+", pattern):
-            # Регистр не важен для keyhunt/ethvanity — они всё равно ищут по
-            # сырому (нижнему) hex-представлению; итоговую проверку с учётом
-            # регистра (по checksum) делает уже Python-предикат выше.
-            extra_hex_prefixes.append(pattern.lower())
-
-    # main.ALL_PREFIXES вычисляется ОДИН РАЗ при импорте main.py, из
-    # дефолтного patterns.SEARCH_WORDS на тот момент — он не видит
-    # install_word_list(), которая переустанавливает patterns.SEARCH_WORDS
-    # уже после импорта (чекбоксы/свои слова из UI, см. install_word_list).
-    # Без явной передачи ниже keyhunt_worker/ethvanity_worker продолжали бы
-    # искать только по исходному дефолтному списку слов, полностью
-    # игнорируя то, что пользователь выключил или добавил в UI.
-    extra_hex_prefixes.extend(
-        w.lower() for w in patterns.SEARCH_WORDS if re.fullmatch(r"[0-9a-fA-F]+", w)
-    )
-    extra_hex_prefixes = sorted(set(extra_hex_prefixes))
+    # Цели ускорителей (eth_hex_targets / tron_targets) строятся ниже из
+    # patterns.SEARCH_WORDS на момент запуска — то есть уже из слов, выбранных
+    # в приложении (install_word_list), а не из списка по умолчанию.
 
     valid_preset = preset_key == "all" or any(
         preset_key in NETWORK_PRESETS.get(n, PRESETS) for n in networks
@@ -577,47 +612,49 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     # Поэтому берём ethvanity (без этого ограничения, матчит по отдельным
     # полубайтам), если keyhunt не может покрыть ВЕСЬ текущий набор целей —
     # custom-паттерн и текущий список слов вместе.
+    # Первым — GPU (metalvanity-evm): в разы быстрее CPU-ускорителей, умеет
+    # условия на конец адреса и проверяет ETH и TRON на одних кандидатах. Для
+    # каждой сети — только если её условие выражается целями движка.
+    gpu_path: Optional[str] = None
+    gpu_eth_targets: Optional[List[str]] = None
+    gpu_trx_targets: Optional[List[str]] = None
+    if not fake_found_interval and engine_pref != "cpu":
+        if "eth" in networks:
+            gpu_eth_targets = eth_hex_targets(preset_key, custom_pattern)
+        if "trx" in networks:
+            gpu_trx_targets = tron_targets(preset_key, custom_pattern)
+        if gpu_eth_targets or gpu_trx_targets:
+            gpu_path = find_gpu_eth()
+        if not gpu_path:
+            gpu_eth_targets = gpu_trx_targets = None
+    gpu_nets = [n for n, t in (("eth", gpu_eth_targets), ("trx", gpu_trx_targets)) if t]
+
+    # ETH без GPU: keyhunt (только начало адреса, чётной длины, не split-key),
+    # иначе ethvanity — он ищет по тем же целям «начало:конец», что и GPU.
     eth_tool_path: Optional[str] = None
     eth_tool_name: Optional[str] = None
-    # Первым — GPU (metalvanity-evm): в разы быстрее и keyhunt, и ethvanity, и
-    # умеет условия на конец адреса. Не для split-key (старты — чужой ключ,
-    # движок этого пока не умеет) и не когда пользователь выключил GPU.
-    gpu_targets: Optional[List[str]] = None
-    if not fake_found_interval and "eth" in networks and not split_key and engine_pref != "cpu":
-        gpu_targets = gpu_eth_targets(preset_key, custom_pattern)
-        gpu_path = find_gpu_eth() if gpu_targets else None
-        if gpu_path:
-            eth_tool_path, eth_tool_name = gpu_path, "metal"
-    if eth_tool_path is None and not fake_found_interval and "eth" in networks:
-        # keyhunt генерирует собственные ключи — в split-key он неприменим.
-        keyhunt_path = None if split_key else find_keyhunt()
-        # Слова из списка релевантны для eligibility-проверки, только если
-        # текущий поиск реально от них зависит (пресет "word"/"all") — иначе
-        # они и так попадают в extra_hex_prefixes для генерации кандидатов
-        # (как и раньше, безвредно), но не должны отключать keyhunt для
-        # пресетов вроде "prefix10", которые со словами вообще не связаны.
-        word_targets_relevant = preset_key in ("word", "all")
-        word_hex_targets = [
-            w.lower() for w in patterns.SEARCH_WORDS if re.fullmatch(r"[0-9a-fA-F]+", w)
-        ] if word_targets_relevant else []
-        if keyhunt_path and _keyhunt_can_target_all(word_hex_targets, custom_pattern):
-            eth_tool_path, eth_tool_name = keyhunt_path, "keyhunt"
-        elif not custom_pattern or custom_pattern[1] == "prefix":
+    eth_targets: Optional[List[str]] = None
+    if not fake_found_interval and "eth" in networks and "eth" not in gpu_nets:
+        eth_targets = eth_hex_targets(preset_key, custom_pattern)
+        if eth_targets:
+            keyhunt_path = None if split_key else find_keyhunt()
+            prefix_only = all(t.endswith(":") and len(t) % 2 == 1 for t in eth_targets)
             ethvanity_path = find_ethvanity()
-            if ethvanity_path:
+            if keyhunt_path and prefix_only:
+                eth_tool_path, eth_tool_name = keyhunt_path, "keyhunt"
+            elif ethvanity_path:
                 eth_tool_path, eth_tool_name = ethvanity_path, "ethvanity"
-            elif keyhunt_path:
-                # ethvanity недоступен, а keyhunt не может покрыть все текущие
-                # цели — лучше честный CPU-перебор (найдёт всё, просто
-                # медленнее), чем "ускоренный" поиск, который часть целей
-                # молча не ищет.
-                pass
-        # suffix/contains custom-паттерн: ни keyhunt, ни ethvanity не умеют
-        # искать не-префиксы — остаётся обычная CPU-генерация с полной
+        # Подстрока / не-hex паттерн: обычная CPU-генерация с полной
         # Python-проверкой предиката, она матчит любой режим корректно.
 
-    eth_accelerated = eth_tool_path is not None
-    cpu_nets = [n for n in networks if n != "eth" or not eth_accelerated]
+    accelerated = set(gpu_nets) | ({"eth"} if eth_tool_path else set())
+    eth_accelerated = bool(accelerated)
+    cpu_nets = [n for n in networks if n not in accelerated]
+    gpu_info = {
+        "available": eth_accelerated,
+        "path": gpu_path or eth_tool_path,
+        "tool": "metal" if gpu_nets else eth_tool_name,
+    }
 
     result_queue: Queue = mp.Queue()
     stats_counter = Value(ctypes.c_ulonglong, 0)
@@ -640,25 +677,30 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     else:
         worker_pool = worker_override if worker_override else (os.cpu_count() or 8)
 
-        if eth_tool_name == "metal":
+        if gpu_nets:
             t = threading.Thread(target=metal_eth_worker, daemon=True, args=(
-                eth_tool_path, gpu_targets, preset_key, result_queue, stats_counter, stop_event, gpu_limits))
+                gpu_path, gpu_eth_targets, gpu_trx_targets, preset_key, result_queue, stats_counter,
+                stop_event, gpu_limits, split_key))
             t.start()
             procs.append(t)
             effective_workers += 1
-        elif eth_accelerated:
-            worker_fn = keyhunt_worker if eth_tool_name == "keyhunt" else ethvanity_worker
-            worker_args = (eth_tool_path, preset_key, result_queue, stats_counter, stop_event,
-                           extra_hex_prefixes, worker_override)
-            if split_key:
-                worker_args += (split_key,)
-            t = threading.Thread(target=worker_fn, args=worker_args, daemon=True)
+        if eth_tool_name == "keyhunt":
+            prefixes = [t[:-1] for t in eth_targets or []]
+            t = threading.Thread(target=keyhunt_worker, daemon=True, args=(
+                eth_tool_path, preset_key, result_queue, stats_counter, stop_event, prefixes, worker_override))
+            t.start()
+            procs.append(t)
+            effective_workers += worker_pool
+        elif eth_tool_name == "ethvanity":
+            t = threading.Thread(target=ethvanity_worker, daemon=True, args=(
+                eth_tool_path, preset_key, result_queue, stats_counter, stop_event, eth_targets,
+                worker_override, split_key))
             t.start()
             procs.append(t)
             effective_workers += worker_pool
 
         for net in cpu_nets:
-            workers = max(1, worker_pool // len(networks))
+            workers = max(1, worker_pool // len(cpu_nets))
             for i in range(workers):
                 if split_key:
                     p = mp.Process(
@@ -684,7 +726,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         "preset_desc": preset_description(preset_key, networks, lang=lang),
         "cpu_count": os.cpu_count() or 0,
         "workers_total": workers_total,
-        "gpu": {"available": eth_accelerated, "path": eth_tool_path, "tool": eth_tool_name},
+        "gpu": gpu_info,
         "fake": bool(fake_found_interval),
     })
 

@@ -232,6 +232,91 @@ static inline void eth_address(thread const Fe &x, thread const Fe &y, thread ui
     a[3] = uint(s[3]);       a[4] = uint(s[3] >> 32);
 }
 
+// ---- TRON: тот же 20-байтный адрес, base58check(0x41 ++ адрес ++ checksum) ----
+
+constant uint K256[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+};
+
+static inline uint rotr32(uint x, uint n) { return (x >> n) | (x << (32 - n)); }
+
+// Один блок SHA-256 (сообщение уже дополнено): w — 16 слов big-endian, h — результат.
+static inline void sha256_block(thread uint *w, thread uint *h) {
+    uint st[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
+    uint a = st[0], b = st[1], c = st[2], d = st[3], e = st[4], f = st[5], g = st[6], hh = st[7];
+    for (int i = 0; i < 64; i++) {
+        uint wi;
+        if (i < 16) {
+            wi = w[i];
+        } else {
+            uint w15 = w[(i - 15) & 15], w2 = w[(i - 2) & 15];
+            uint s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+            uint s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+            wi = w[i & 15] + s0 + w[(i - 7) & 15] + s1;
+            w[i & 15] = wi;
+        }
+        uint t1 = hh + (rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)) + ((e & f) ^ (~e & g)) + K256[i] + wi;
+        uint t2 = (rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+        hh = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+    h[0] = st[0] + a; h[1] = st[1] + b; h[2] = st[2] + c; h[3] = st[3] + d;
+    h[4] = st[4] + e; h[5] = st[5] + f; h[6] = st[6] + g; h[7] = st[7] + hh;
+}
+
+// v — 0x41 ++ адрес как 6 слов big-endian (v[0] = 0x41). Возвращает первые 4 байта
+// sha256(sha256(21 байт)) — контрольную сумму base58check.
+static inline uint tron_checksum(thread const uint *v) {
+    uint w[16];
+    // 21 байт: 0x41, затем 20 байт адреса; сдвигаем на 3 байта влево внутри слов.
+    w[0] = (v[0] << 24) | (v[1] >> 8);
+    w[1] = (v[1] << 24) | (v[2] >> 8);
+    w[2] = (v[2] << 24) | (v[3] >> 8);
+    w[3] = (v[3] << 24) | (v[4] >> 8);
+    w[4] = (v[4] << 24) | (v[5] >> 8);
+    w[5] = (v[5] << 24) | 0x800000u;   // последний байт адреса, затем 0x80
+    for (int i = 6; i < 15; i++) w[i] = 0;
+    w[15] = 21 * 8;
+    uint h1[8];
+    sha256_block(w, h1);
+    for (int i = 0; i < 8; i++) w[i] = h1[i];
+    w[8] = 0x80000000u;
+    for (int i = 9; i < 15; i++) w[i] = 0;
+    w[15] = 32 * 8;
+    uint h2[8];
+    sha256_block(w, h2);
+    return h2[0];
+}
+
+static inline int cmp6(thread const uint *v, constant uint *bound) {
+    for (int i = 0; i < 6; i++) {
+        if (v[i] != bound[i]) return v[i] < bound[i] ? -1 : 1;
+    }
+    return 0;
+}
+
+static inline void record(uint t, uint offset, thread const uint *a, uint network,
+                          constant uint *cfg, device atomic_uint *hits, device uint *out) {
+    uint idx = atomic_fetch_add_explicit(hits, 1, memory_order_relaxed);
+    if (idx >= cfg[2]) return;
+    device uint *slot = out + idx * 8;
+    slot[0] = t; slot[1] = offset;
+    for (int i = 0; i < 5; i++) slot[2 + i] = a[i];
+    slot[7] = network;
+}
+
+// cfg после ETH-шаблонов: число TRON-целей и цели по 20 слов:
+//   [0] флаги (1 — есть начало, 2 — есть конец), [1] k — длина конца (≤ 10),
+//   [2..7] / [8..13] — границы (0x41 ++ адрес) для начала, 6 слов big-endian,
+//   [14] конец mod 2^k, [15..16] конец mod 29^k, [17..18] 29^k (lo, hi).
+// Начало base58 — это диапазон чисел, проверка без контрольной суммы. Конец —
+// остаток числа (адрес ++ checksum) по модулю 58^k = 2^k · 29^k.
 static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint offset,
                          constant uint *cfg, device atomic_uint *hits, device uint *out) {
     uint a[5];
@@ -242,13 +327,34 @@ static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint of
         ok = (a[0] & pat[5]) == pat[0] && (a[1] & pat[6]) == pat[1] && (a[2] & pat[7]) == pat[2]
           && (a[3] & pat[8]) == pat[3] && (a[4] & pat[9]) == pat[4];
     }
-    if (!ok) return;
-    uint idx = atomic_fetch_add_explicit(hits, 1, memory_order_relaxed);
-    if (idx >= cfg[2]) return;
-    device uint *slot = out + idx * 8;
-    slot[0] = t; slot[1] = offset;
-    for (int i = 0; i < 5; i++) slot[2 + i] = a[i];
-    slot[7] = 0;
+    if (ok) record(t, offset, a, 0, cfg, hits, out);
+
+    constant uint *tron = cfg + 4 + cfg[3] * 10;
+    uint ntron = tron[0];
+    if (ntron == 0) return;
+    uint v[6] = { 0x41u, bswap(a[0]), bswap(a[1]), bswap(a[2]), bswap(a[3]), bswap(a[4]) };
+    bool have_chk = false;
+    uint chk = 0;
+    for (uint k = 0; k < ntron; k++) {
+        constant uint *tt = tron + 1 + k * 20;
+        if ((tt[0] & 1u) && (cmp6(v, tt + 2) < 0 || cmp6(v, tt + 8) > 0)) continue;
+        if (tt[0] & 2u) {
+            if (!have_chk) { chk = tron_checksum(v); have_chk = true; }
+            uint kk = tt[1];
+            if ((chk & ((1u << kk) - 1u)) != tt[14]) continue;
+            ulong m = ulong(tt[17]) | (ulong(tt[18]) << 32);
+            ulong r = 0;
+            for (int i = 0; i < 6; i++) {
+                uint word = v[i];
+                int first = i == 0 ? 3 : 0;   // v[0] — один байт 0x41
+                for (int b = first; b < 4; b++) r = (r * 256 + ((word >> (24 - 8 * b)) & 0xffu)) % m;
+            }
+            for (int b = 0; b < 4; b++) r = (r * 256 + ((chk >> (24 - 8 * b)) & 0xffu)) % m;
+            if (r != (ulong(tt[15]) | (ulong(tt[16]) << 32))) continue;
+        }
+        record(t, offset, a, 1, cfg, hits, out);
+        return;
+    }
 }
 
 kernel void step(device uint *points        [[buffer(0)]],

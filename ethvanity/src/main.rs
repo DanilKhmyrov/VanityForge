@@ -38,8 +38,11 @@ use tiny_keccak::{Hasher, Keccak};
 mod create2;
 mod ton;
 
+type Target = (Vec<u8>, Vec<u8>);
+
 struct Args {
-    prefixes: Vec<Vec<u8>>, // каждый префикс — последовательность полубайтов (0..=15)
+    /// Цели: (начало, конец) полубайтами (0..=15); любая часть может быть пустой.
+    prefixes: Vec<Target>,
     threads: usize,
     split_key: Option<PublicKey>,
 }
@@ -62,7 +65,22 @@ fn parse_args() -> Args {
                     let nibbles: Option<Vec<u8>> = v.chars().map(hex_nibble).collect();
                     if let Some(nibbles) = nibbles {
                         if !nibbles.is_empty() {
-                            prefixes.push(nibbles);
+                            prefixes.push((nibbles, Vec::new()));
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            // "начало:конец" в hex — как у metalvanity-evm, чтобы условия на
+            // конец адреса работали и без видеокарты.
+            "--target" => {
+                if let Some(v) = args.get(i + 1) {
+                    let (pre, suf) = v.split_once(':').unwrap_or((v.as_str(), ""));
+                    let pre: Option<Vec<u8>> = pre.chars().map(hex_nibble).collect();
+                    let suf: Option<Vec<u8>> = suf.chars().map(hex_nibble).collect();
+                    if let (Some(pre), Some(suf)) = (pre, suf) {
+                        if !(pre.is_empty() && suf.is_empty()) && pre.len() + suf.len() <= 40 {
+                            prefixes.push((pre, suf));
                         }
                     }
                     i += 1;
@@ -120,13 +138,9 @@ fn nibble_at(addr: &[u8; 20], index: usize) -> u8 {
 }
 
 #[inline]
-fn matches_prefix(addr: &[u8; 20], prefix: &[u8]) -> bool {
-    for (i, &want) in prefix.iter().enumerate() {
-        if nibble_at(addr, i) != want {
-            return false;
-        }
-    }
-    true
+fn matches_target(addr: &[u8; 20], (prefix, suffix): &Target) -> bool {
+    prefix.iter().enumerate().all(|(i, &want)| nibble_at(addr, i) == want)
+        && suffix.iter().enumerate().all(|(i, &want)| nibble_at(addr, 40 - suffix.len() + i) == want)
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -188,7 +202,7 @@ fn main() {
     }
 }
 
-fn worker_loop(prefixes: &[Vec<u8>], checked: &AtomicU64, tx: mpsc::Sender<(String, String)>, split_key: Option<PublicKey>) {
+fn worker_loop(prefixes: &[Target], checked: &AtomicU64, tx: mpsc::Sender<(String, String)>, split_key: Option<PublicKey>) {
     let secp = Secp256k1::new();
     let mut rng = OsRng;
 
@@ -220,7 +234,7 @@ fn worker_loop(prefixes: &[Vec<u8>], checked: &AtomicU64, tx: mpsc::Sender<(Stri
         for step in 0..BATCH {
             let addr = eth_address_bytes(&pubkey);
 
-            if prefixes.iter().any(|p| matches_prefix(&addr, p)) {
+            if prefixes.iter().any(|t| matches_target(&addr, t)) {
                 let addr_hex = to_hex(&addr);
                 let sk_hex = to_hex(&secret.secret_bytes());
                 if tx.send((addr_hex, sk_hex)).is_err() {

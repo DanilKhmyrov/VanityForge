@@ -341,7 +341,7 @@ enum L: String {
         .keepAwakeHelp: [.ru: "Во время поиска Mac не уходит в сон (экран может гаснуть)", .en: "While searching the Mac won't go to sleep (the display may still turn off)"],
         .gpuLoadLabel: [.ru: "Нагрузка", .en: "Load"],
         .useGPU: [.ru: "Считать на видеокарте", .en: "Use the GPU"],
-        .useGPUHintWallets: [.ru: "Metal: EVM-адреса в 15–30 раз быстрее. TRON, Solana, TON, split-key и «содержит» считаются на процессоре.", .en: "Metal: EVM addresses 15–30× faster. TRON, Solana, TON, split-key and \"contains\" run on the CPU."],
+        .useGPUHintWallets: [.ru: "Metal: EVM и TRON (и для split-key) в 15–30 раз быстрее. Solana, TON и «содержит» считаются на процессоре.", .en: "Metal: EVM and TRON (split-key too) 15–30× faster. Solana, TON and \"contains\" run on the CPU."],
         .useGPUHintContracts: [.ru: "Metal, в ~5 раз быстрее процессора. Выключите, если видеокарта нужна под другое.", .en: "Metal, about 5× faster than the CPU. Turn off if you need the GPU for something else."],
         .sectionKind: [.ru: "Способ развёртывания", .en: "Deployment method"],
         .unitAttemptsPerSec: [.ru: "попыток/с", .en: "tries/s"],
