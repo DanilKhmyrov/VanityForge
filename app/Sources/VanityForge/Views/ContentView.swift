@@ -53,7 +53,7 @@ struct ContentView: View {
     @ViewBuilder
     private var background: some View {
         let accent = session.accentKey.map(NetworkVisual.accent(for:)) ?? .accentColor
-        if session.isRunning {
+        if session.isSearching {
             // Живой "дышащий" фон, пока идёт поиск — лёгкая обратная связь,
             // что процесс активен. Таймер крутится только во время поиска,
             // чтобы не жечь CPU впустую, когда приложение просто открыто.

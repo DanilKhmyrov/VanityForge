@@ -37,7 +37,7 @@ struct StatsDashboardView: View {
     @ViewBuilder
     private var statusHeader: some View {
         HStack(spacing: 10) {
-            PulseDot(active: session.phase == .running, color: accentColor)
+            PulseDot(active: session.isSearching, color: accentColor)
 
             Text(statusLabel)
                 .font(.system(size: 13, weight: .medium))
@@ -85,7 +85,8 @@ struct StatsDashboardView: View {
 
             Spacer()
 
-            if let rarity = session.phase == .running ? session.liveRarity : session.lastStopped?.rarity1In {
+            if let rarity = (session.phase == .running || session.phase == .paused)
+                ? session.liveRarity : session.lastStopped?.rarity1In {
                 Text("\(session.t(.avgRarity))\(Format.compact(rarity, session.language))")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
@@ -112,6 +113,12 @@ struct StatsDashboardView: View {
             let net = session.started?.networksFull.values.joined(separator: ", ") ?? ""
             let preset = session.started?.presetDesc ?? ""
             return net.isEmpty ? session.t(.statusSearching) : "\(net) · \(preset)"
+        case .pausing:
+            return session.t(.pausing)
+        case .paused:
+            return session.t(.statusPaused)
+        case .resuming:
+            return session.t(.resuming)
         case .stopping:
             return session.t(.stopping)
         }

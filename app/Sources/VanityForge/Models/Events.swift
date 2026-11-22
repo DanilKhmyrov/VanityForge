@@ -165,6 +165,8 @@ struct PresetsEvent: Codable, Hashable {
 enum BridgeEvent {
     case started(StartedEvent)
     case stats(StatsEvent)
+    case paused
+    case resumed
     case found(FoundEvent)
     case stopped(StoppedEvent)
     case error(ErrorEvent)
@@ -184,6 +186,10 @@ enum BridgeEvent {
             return (try? decoder.decode(StartedEvent.self, from: data)).map(BridgeEvent.started)
         case "stats":
             return (try? decoder.decode(StatsEvent.self, from: data)).map(BridgeEvent.stats)
+        case "paused":
+            return .paused
+        case "resumed":
+            return .resumed
         case "found":
             return (try? decoder.decode(FoundEvent.self, from: data)).map(BridgeEvent.found)
         case "stopped":

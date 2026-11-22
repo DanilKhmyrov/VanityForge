@@ -27,6 +27,9 @@ final class SessionViewModel {
     enum Phase: Equatable {
         case idle
         case running
+        case pausing
+        case paused
+        case resuming
         case stopping
     }
 
@@ -58,17 +61,17 @@ final class SessionViewModel {
     var phase: Phase = .idle {
         didSet {
             guard phase != oldValue else { return }
-            if phase == .running {
+            if phase == .running || phase == .pausing || phase == .resuming {
                 sleepGuard.begin(reason: "VanityForge: address search")
-            } else if phase == .idle {
+            } else if phase == .idle || phase == .paused {
                 sleepGuard.end()
             }
         }
     }
     private let sleepGuard = SleepGuard()
     private let notifier = FoundNotifier()
-    /// Mac не заснёт, пока идёт поиск (см. SleepGuard).
-    var keepsAwake: Bool { phase != .idle }
+    /// Mac не заснёт во время поиска, но может уснуть, пока поиск на паузе.
+    var keepsAwake: Bool { phase == .running || phase == .pausing || phase == .resuming }
     var searchMode: SearchMode = .wallets {
         didSet { if searchMode != oldValue { saveSettings() } }
     }
@@ -237,11 +240,13 @@ final class SessionViewModel {
     /// Оценка редкости прямо во время поиска (не только после Stop) —
     /// считается на лету из уже пришедшей статистики/находок.
     var liveRarity: UInt64? {
-        guard phase == .running, let total = stats?.totalChecked, !foundItems.isEmpty else { return nil }
+        guard (phase == .running || phase == .paused), let total = stats?.totalChecked,
+              !foundItems.isEmpty else { return nil }
         return total / UInt64(foundItems.count)
     }
 
     var isRunning: Bool { phase != .idle }
+    var isSearching: Bool { phase == .running || phase == .pausing || phase == .resuming }
 
     /// Пойдёт ли текущий поиск кошельков на видеокарту: GPU-движок знает EVM и TRON.
     var willUseGPU: Bool {
@@ -558,9 +563,21 @@ final class SessionViewModel {
     }
 
     func stop() {
-        guard phase == .running else { return }
+        guard phase != .idle, phase != .stopping else { return }
         phase = .stopping
         bridge.stop()
+    }
+
+    func pause() {
+        guard phase == .running else { return }
+        phase = .pausing
+        bridge.pause()
+    }
+
+    func resume() {
+        guard phase == .paused else { return }
+        phase = .resuming
+        bridge.resume()
     }
 
     private func handle(_ event: BridgeEvent) {
@@ -569,10 +586,22 @@ final class SessionViewModel {
             started = e
         case .stats(let e):
             stats = e
-            let smoothing = 0.35
-            displaySpeed = displaySpeed == 0 ? Double(e.speed) : (smoothing * Double(e.speed) + (1 - smoothing) * displaySpeed)
-            speedHistory.append(SpeedSample(elapsed: e.elapsedSeconds, speed: displaySpeed))
-            if speedHistory.count > 180 { speedHistory.removeFirst(speedHistory.count - 180) }
+            if phase == .running {
+                let smoothing = 0.35
+                displaySpeed = displaySpeed == 0 ? Double(e.speed) : (smoothing * Double(e.speed) + (1 - smoothing) * displaySpeed)
+                speedHistory.append(SpeedSample(elapsed: e.elapsedSeconds, speed: displaySpeed))
+                if speedHistory.count > 180 { speedHistory.removeFirst(speedHistory.count - 180) }
+            }
+        case .paused:
+            if phase == .pausing {
+                phase = .paused
+                displaySpeed = 0
+            }
+        case .resumed:
+            if phase == .resuming {
+                phase = .running
+                displaySpeed = 0
+            }
         case .found(let e):
             totalFoundCount += 1
             burstSeed += 1
@@ -611,7 +640,13 @@ final class SessionViewModel {
             }
         case .error(let e):
             lastError = e.message
-            if e.fatal { phase = .idle }
+            if e.fatal {
+                phase = .idle
+            } else if phase == .pausing {
+                phase = .running
+            } else if phase == .resuming {
+                phase = .paused
+            }
         case .presets:
             break
         case .balance(let e):
