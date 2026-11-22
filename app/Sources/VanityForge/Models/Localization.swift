@@ -42,6 +42,10 @@ enum L: String {
     case wordListCustom
     case wordListAddPlaceholder
     case wordListNoneSelected
+    case pauseSearch
+    case resumeSearch
+    case pausing
+    case resuming
     case stopSearch
     case stopping
 
@@ -57,6 +61,7 @@ enum L: String {
     case rarestFindHelp
     case avgRarity
     case statusStopped
+    case statusPaused
     case statusReady
     case statusSearching
 
@@ -229,6 +234,10 @@ enum L: String {
         .wordListCustom: [.ru: "Свои слова", .en: "Custom words"],
         .wordListAddPlaceholder: [.ru: "добавить слово…", .en: "add a word…"],
         .wordListNoneSelected: [.ru: "выберите хотя бы одно слово", .en: "select at least one word"],
+        .pauseSearch: [.ru: "Пауза", .en: "Pause"],
+        .resumeSearch: [.ru: "Продолжить", .en: "Resume"],
+        .pausing: [.ru: "Приостанавливаем…", .en: "Pausing…"],
+        .resuming: [.ru: "Возобновляем…", .en: "Resuming…"],
         .stopSearch: [.ru: "Остановить", .en: "Stop"],
         .stopping: [.ru: "Останавливаем…", .en: "Stopping…"],
 
@@ -243,6 +252,7 @@ enum L: String {
         .rarestFindHelp: [.ru: "Самая редкая находка за сессию", .en: "Rarest find this session"],
         .avgRarity: [.ru: "Средняя редкость: 1 : ", .en: "Average rarity: 1 : "],
         .statusStopped: [.ru: "Остановлено", .en: "Stopped"],
+        .statusPaused: [.ru: "Поиск на паузе", .en: "Search paused"],
         .statusReady: [.ru: "Готов к запуску", .en: "Ready to start"],
         .statusSearching: [.ru: "Идёт поиск…", .en: "Searching…"],
 

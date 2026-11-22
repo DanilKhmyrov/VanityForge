@@ -1,10 +1,8 @@
 import Foundation
 
 /// Запускает `bridge.py` как дочерний процесс и превращает его stdout (JSON Lines)
-/// в асинхронный поток событий. Остановка идёт через stdin-команду
-/// `{"cmd":"stop"}` (даёт python-стороне корректно завершить воркеры и
-/// сохранить статистику); SIGTERM/SIGKILL — только как страховка на случай
-/// зависшего процесса.
+/// в асинхронный поток событий. Управление поиском идёт через stdin-команды;
+/// SIGTERM/SIGKILL используются только как страховка для остановки.
 final class PythonBridge {
     static var venvPython: URL { PythonRuntimeLocator.pythonExecutable }
     static var bridgeScript: URL { PythonRuntimeLocator.bridgeScript }
@@ -137,12 +135,7 @@ final class PythonBridge {
     /// Мягкая остановка: команда через stdin, затем SIGTERM/SIGKILL как страховка.
     func stop() {
         guard let process, process.isRunning else { return }
-
-        if let handle = stdinHandle, let data = "{\"cmd\": \"stop\"}\n".data(using: .utf8) {
-            try? handle.write(contentsOf: data)
-            try? handle.close()
-            stdinHandle = nil
-        }
+        sendCommand("stop", closeInput: true)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak process] in
             guard let process, process.isRunning else { return }
@@ -151,6 +144,20 @@ final class PythonBridge {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak process] in
             guard let process, process.isRunning else { return }
             kill(process.processIdentifier, SIGKILL)
+        }
+    }
+
+    func pause() { sendCommand("pause") }
+
+    func resume() { sendCommand("resume") }
+
+    private func sendCommand(_ command: String, closeInput: Bool = false) {
+        guard process?.isRunning == true, let handle = stdinHandle,
+              let data = "{\"cmd\": \"\(command)\"}\n".data(using: .utf8) else { return }
+        try? handle.write(contentsOf: data)
+        if closeInput {
+            try? handle.close()
+            stdinHandle = nil
         }
     }
 

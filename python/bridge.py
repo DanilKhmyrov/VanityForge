@@ -3,8 +3,8 @@ JSON-мост между генератором (main.py) и внешним UI (
 
 Переиспользует воркеры и утилиты из main.py как есть — не меняет
 алгоритмы поиска/паттерны. Единственная разница: вместо print в терминал
-эмитит построчный JSON (JSON Lines) в stdout и слушает stdin на команду
-остановки {"cmd": "stop"}.
+эмитит построчный JSON (JSON Lines) в stdout и принимает из stdin команды
+pause, resume и stop.
 
 Использование:
     python3 python/bridge.py <networks> <preset>
@@ -53,11 +53,102 @@ CUSTOM_KEY = "_custom"
 MAX_DETAILED_FINDS = 300
 
 
+class WorkerControl:
+    """Pause/resume all search workers without resetting their search state."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._processes = {}
+        self._paused = False
+        self._paused_at: Optional[float] = None
+        self._paused_seconds = 0.0
+
+    @property
+    def is_paused(self) -> bool:
+        with self._lock:
+            return self._paused
+
+    def register(self, process) -> None:
+        pid = process.pid
+        if pid is None:
+            return
+        with self._lock:
+            self._processes[pid] = process
+            if self._paused:
+                self._send(pid, signal.SIGSTOP)
+
+    def unregister(self, process) -> None:
+        pid = process.pid
+        if pid is None:
+            return
+        with self._lock:
+            if self._processes.get(pid) is process:
+                self._processes.pop(pid, None)
+
+    @staticmethod
+    def _send(pid: int, sig: int) -> None:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _alive(process) -> bool:
+        if hasattr(process, "is_alive"):
+            return process.is_alive()
+        return process.poll() is None
+
+    def pause(self) -> None:
+        with self._lock:
+            if self._paused:
+                return
+            self._paused = True
+            self._paused_at = time.monotonic()
+            try:
+                for pid, process in list(self._processes.items()):
+                    if self._alive(process):
+                        self._send(pid, signal.SIGSTOP)
+            except OSError:
+                self._resume_locked()
+                raise
+
+    def resume(self) -> None:
+        with self._lock:
+            self._resume_locked()
+
+    def resume_all(self) -> None:
+        """Ensure stopped workers can exit during app shutdown or Stop."""
+        with self._lock:
+            self._resume_locked()
+
+    def _resume_locked(self) -> None:
+        if not self._paused:
+            return
+        for pid, process in list(self._processes.items()):
+            if self._alive(process):
+                self._send(pid, signal.SIGCONT)
+        if self._paused_at is not None:
+            self._paused_seconds += time.monotonic() - self._paused_at
+        self._paused_at = None
+        self._paused = False
+
+    def elapsed(self, started_at: float) -> float:
+        with self._lock:
+            paused = self._paused_seconds
+            if self._paused_at is not None:
+                paused += time.monotonic() - self._paused_at
+            return max(0.0, time.monotonic() - started_at - paused)
+
+    def wait_until_resumed(self, stop_event) -> None:
+        while self.is_paused and not stop_event.is_set():
+            stop_event.wait(0.1)
+
+
 def emit(obj: dict) -> None:
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
 
-def stdin_listener(stop_event) -> None:
+def stdin_listener(stop_event, worker_control: WorkerControl) -> None:
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -67,11 +158,22 @@ def stdin_listener(stop_event) -> None:
         except json.JSONDecodeError:
             continue
         if cmd.get("cmd") == "stop":
+            worker_control.resume_all()
             stop_event.set()
             break
+        if cmd.get("cmd") == "pause":
+            try:
+                worker_control.pause()
+                emit({"type": "paused"})
+            except OSError as error:
+                emit({"type": "error", "message": f"could not pause search workers: {error}", "fatal": False})
+        elif cmd.get("cmd") == "resume":
+            worker_control.resume()
+            emit({"type": "resumed"})
     # stdin закрылся — значит, приложение ушло (закрыли, упало, убили).
     # Без этого воркеры и ethvanity продолжали бы жечь CPU сиротами, а
     # находки было бы некому показать.
+    worker_control.resume_all()
     stop_event.set()
 
 
@@ -293,6 +395,7 @@ def ethvanity_worker(
     targets: List[str],
     worker_override: Optional[int] = None,
     split_key: Optional[str] = None,
+    worker_control: Optional[WorkerControl] = None,
 ) -> None:
     """Встроенный ethvanity (Rust, CPU): построчный JSON на выходе. Цели —
     «начало:конец» в hex, как у GPU-движка (см. eth_hex_targets)."""
@@ -304,7 +407,8 @@ def ethvanity_worker(
     for target in targets:
         cmd += ["--target", target]
 
-    _pump_eth_engine(cmd, preset_key, result_queue, stats_counter, stop_event, split_key=split_key)
+    _pump_eth_engine(cmd, preset_key, result_queue, stats_counter, stop_event, split_key=split_key,
+                     worker_control=worker_control)
 
 
 def _engine_address(network: str, key_hex: str, split_key: Optional[str]) -> Optional[str]:
@@ -326,13 +430,16 @@ def _engine_address(network: str, key_hex: str, split_key: Optional[str]) -> Opt
 
 
 def _pump_eth_engine(cmd: List[str], preset_key: str, result_queue: "mp.Queue", stats_counter, stop_event,
-                     split_key: Optional[str] = None) -> None:
+                     split_key: Optional[str] = None,
+                     worker_control: Optional[WorkerControl] = None) -> None:
     """Запускает ETH-движок с построчным JSON (ethvanity / metalvanity-evm) и
     перекачивает его события: stats — в общий счётчик, found — в очередь, если
     адрес проходит Python-предикат выбранного пресета. Ключ находки независимо
     пересчитывается в адрес (coincurve): кошелёк с неверным ключом хуже, чем
     никакого. GPU-движок присылает и TRON-находки (поле network)."""
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    if worker_control:
+        worker_control.register(proc)
 
     def _kill_on_stop() -> None:
         stop_event.wait()
@@ -342,42 +449,47 @@ def _pump_eth_engine(cmd: List[str], preset_key: str, result_queue: "mp.Queue", 
 
     last_checked = 0
 
-    for line in iter(proc.stdout.readline, ""):
-        if not line:
-            break
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        event_type = payload.get("type")
-        if event_type == "stats":
-            checked = payload.get("checked", 0)
-            delta = checked - last_checked
-            if delta > 0:
-                with stats_counter.get_lock():
-                    stats_counter.value += delta
-                last_checked = checked
-        elif event_type == "found":
-            network = str(payload.get("network", "eth"))
-            address = str(payload.get("address", ""))
-            if network == "eth":
-                address = address.lower()
-            private_key = str(payload.get("private_key", ""))
-            if _engine_address(network, private_key, split_key) != address:
-                emit({"type": "error", "message": f"engine returned a wrong key for {address}", "fatal": False})
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            if not line:
+                break
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
                 continue
-            presets = NETWORK_PRESETS.get(network, PRESETS)
-            matched = [
-                name for name, (_, pred) in presets.items()
-                if name != "all" and pred(address)
-            ]
-            if matched and (preset_key == "all" or preset_key in matched):
-                result_queue.put((network, address, private_key, matched, 0))
-        elif event_type == "error":
-            emit({"type": "error", "message": str(payload.get("message", "engine error")), "fatal": False})
 
-    proc.kill()
+            event_type = payload.get("type")
+            if event_type == "stats":
+                checked = payload.get("checked", 0)
+                delta = checked - last_checked
+                if delta > 0:
+                    with stats_counter.get_lock():
+                        stats_counter.value += delta
+                    last_checked = checked
+            elif event_type == "found":
+                network = str(payload.get("network", "eth"))
+                address = str(payload.get("address", ""))
+                if network == "eth":
+                    address = address.lower()
+                private_key = str(payload.get("private_key", ""))
+                if _engine_address(network, private_key, split_key) != address:
+                    emit({"type": "error", "message": f"engine returned a wrong key for {address}", "fatal": False})
+                    continue
+                presets = NETWORK_PRESETS.get(network, PRESETS)
+                matched = [
+                    name for name, (_, pred) in presets.items()
+                    if name != "all" and pred(address)
+                ]
+                if matched and (preset_key == "all" or preset_key in matched):
+                    result_queue.put((network, address, private_key, matched, 0))
+            elif event_type == "error":
+                emit({"type": "error", "message": str(payload.get("message", "engine error")), "fatal": False})
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        if worker_control:
+            worker_control.unregister(proc)
 
 
 def find_gpu_eth() -> Optional[str]:
@@ -498,7 +610,8 @@ def gpu_limit_args(args: List[str]) -> Tuple[str, ...]:
 
 def metal_eth_worker(binary_path: str, eth_targets: Optional[List[str]], trx_targets: Optional[List[str]],
                      preset_key: str, result_queue: "mp.Queue", stats_counter, stop_event,
-                     gpu_limits: Tuple[str, ...] = (), split_key: Optional[str] = None) -> None:
+                     gpu_limits: Tuple[str, ...] = (), split_key: Optional[str] = None,
+                     worker_control: Optional[WorkerControl] = None) -> None:
     """GPU-движок проверяет ETH и TRON на одних и тех же кандидатах: у обеих
     сетей из одного ключа одинаковые 20 байт адреса."""
     cmd = [binary_path] + list(gpu_limits)
@@ -508,18 +621,24 @@ def metal_eth_worker(binary_path: str, eth_targets: Optional[List[str]], trx_tar
         cmd += ["--target", target]
     for target in trx_targets or []:
         cmd += ["--tron-target", target]
-    _pump_eth_engine(cmd, preset_key, result_queue, stats_counter, stop_event, split_key=split_key)
+    _pump_eth_engine(cmd, preset_key, result_queue, stats_counter, stop_event, split_key=split_key,
+                     worker_control=worker_control)
 
 
 def fake_found_worker(networks: List[str], preset_key: str, result_queue: "mp.Queue",
-                       stats_counter, interval: float) -> None:
+                       stats_counter, interval: float, stop_event,
+                       worker_control: WorkerControl) -> None:
     """Отладочный воркер: генерирует реальные адреса случайных сетей и объявляет их
     "найденными" без проверки паттерна — нужен только чтобы прогнать UI на живых
     событиях, не дожидаясь настоящей редкой находки."""
     import random
 
-    while True:
-        time.sleep(interval)
+    while not stop_event.is_set():
+        if stop_event.wait(interval):
+            break
+        worker_control.wait_until_resumed(stop_event)
+        if stop_event.is_set():
+            break
         net = random.choice(networks)
         try:
             address, private_key = NETWORKS[net].generate()
@@ -581,6 +700,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         return
 
     stop_event = mp.Event()
+    worker_control = WorkerControl()
     signal.signal(signal.SIGINT, lambda *_: stop_event.set())
     signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
 
@@ -633,7 +753,8 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     if fake_found_interval:
         t = threading.Thread(
             target=fake_found_worker,
-            args=(networks, preset_key, result_queue, stats_counter, fake_found_interval),
+            args=(networks, preset_key, result_queue, stats_counter, fake_found_interval, stop_event,
+                  worker_control),
             daemon=True,
         )
         t.start()
@@ -645,14 +766,14 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         if gpu_nets:
             t = threading.Thread(target=metal_eth_worker, daemon=True, args=(
                 gpu_path, gpu_eth_targets, gpu_trx_targets, preset_key, result_queue, stats_counter,
-                stop_event, gpu_limits, split_key))
+                stop_event, gpu_limits, split_key, worker_control))
             t.start()
             procs.append(t)
             effective_workers += 1
         if eth_tool_name == "ethvanity":
             t = threading.Thread(target=ethvanity_worker, daemon=True, args=(
                 eth_tool_path, preset_key, result_queue, stats_counter, stop_event, eth_targets,
-                worker_override, split_key))
+                worker_override, split_key, worker_control))
             t.start()
             procs.append(t)
             effective_workers += worker_pool
@@ -672,6 +793,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
                     )
                 p.start()
                 procs.append(p)
+                worker_control.register(p)
             effective_workers += workers
 
     workers_total = effective_workers
@@ -688,18 +810,24 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         "fake": bool(fake_found_interval),
     })
 
-    stdin_thread = threading.Thread(target=stdin_listener, args=(stop_event,), daemon=True)
+    stdin_thread = threading.Thread(target=stdin_listener, args=(stop_event, worker_control), daemon=True)
     stdin_thread.start()
 
     def stats_loop() -> None:
-        start_time = time.time()
+        start_time = time.monotonic()
         # (время, счётчик) на момент старта — база для окна.
         window: "deque[Tuple[float, int]]" = deque([(start_time, 0)], maxlen=SPEED_WINDOW_TICKS + 1)
+        was_paused = False
         while not stop_event.is_set():
             time.sleep(STATS_UPDATE_INTERVAL)
-            now = time.time()
+            now = time.monotonic()
             current = stats_counter.value
-            elapsed = now - start_time
+            elapsed = worker_control.elapsed(start_time)
+
+            paused = worker_control.is_paused
+            if paused or was_paused:
+                window.clear()
+                window.append((now, current))
 
             oldest_time, oldest_count = window[0]
             dt = now - oldest_time
@@ -707,7 +835,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
             # мгновенная дельта: сглаживает как рывки апстрима (движки отдают
             # прогресс пачками), так и дрожание планировщика под полной
             # нагрузкой CPU, без искусственной задержки реакции на тренд.
-            speed = int((current - oldest_count) / dt) if dt > 0 else 0
+            speed = 0 if paused else (int((current - oldest_count) / dt) if dt > 0 else 0)
 
             emit({
                 "type": "stats",
@@ -717,6 +845,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
                 "workers_total": workers_total,
             })
             window.append((now, current))
+            was_paused = paused
 
     stats_thread = threading.Thread(target=stats_loop, daemon=True)
     stats_thread.start()
@@ -724,13 +853,19 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     found_count = 0
     detailed_emitted = 0
     throttled_notified = False
-    start_time = time.time()
+    start_time = time.monotonic()
     try:
         while not stop_event.is_set():
+            worker_control.wait_until_resumed(stop_event)
+            if stop_event.is_set():
+                break
             try:
                 network_name, address, private_key, matched, _ = result_queue.get(timeout=0.5)
             except Exception:
                 continue
+            worker_control.wait_until_resumed(stop_event)
+            if stop_event.is_set():
+                break
             found_count += 1
 
             # Слишком "широкий" паттерн (короткий префикс и т.п.) может давать
@@ -763,13 +898,14 @@ def generate_vanity_json(networks: List[str], preset_key: str,
                     "message": message,
                 })
     finally:
+        worker_control.resume_all()
         stop_event.set()
         for p in procs:
             if isinstance(p, mp.Process):
                 p.terminate()
 
         total = stats_counter.value
-        elapsed = time.time() - start_time
+        elapsed = worker_control.elapsed(start_time)
         emit({
             "type": "stopped",
             "reason": "user_stop",
@@ -884,6 +1020,7 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
     и живая лента работали без изменений; в found вместо приватного ключа
     приходит salt (он не секретный) и параметры развёртывания."""
     stop_event = threading.Event()
+    worker_control = WorkerControl()
     signal.signal(signal.SIGINT, lambda *_: stop_event.set())
     signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
 
@@ -891,7 +1028,7 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
     result_queue: Queue = mp.Queue()
     stats_counter = Value(ctypes.c_ulonglong, 0)
     engine, procs = create2.start_search(params, workers, result_queue, stats_counter, stop_event, engine_pref,
-                                         gpu_limits)
+                                         gpu_limits, worker_control)
     network_full = params.network_full(lang)
     kind = params.kind
 
@@ -908,36 +1045,48 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
         "fake": False,
     })
 
-    threading.Thread(target=stdin_listener, args=(stop_event,), daemon=True).start()
+    threading.Thread(target=stdin_listener, args=(stop_event, worker_control), daemon=True).start()
 
-    start_time = time.time()
+    start_time = time.monotonic()
 
     def stats_loop() -> None:
         window: "deque[Tuple[float, int]]" = deque([(start_time, 0)], maxlen=SPEED_WINDOW_TICKS + 1)
+        was_paused = False
         while not stop_event.is_set():
             time.sleep(STATS_UPDATE_INTERVAL)
-            now = time.time()
+            now = time.monotonic()
             current = stats_counter.value
+            paused = worker_control.is_paused
+            if paused or was_paused:
+                window.clear()
+                window.append((now, current))
             oldest_time, oldest_count = window[0]
             dt = now - oldest_time
             emit({
                 "type": "stats",
-                "elapsed_seconds": round(now - start_time, 1),
+                "elapsed_seconds": round(worker_control.elapsed(start_time), 1),
                 "total_checked": current,
-                "speed": int((current - oldest_count) / dt) if dt > 0 else 0,
+                "speed": 0 if paused else (int((current - oldest_count) / dt) if dt > 0 else 0),
                 "workers_total": workers,
             })
             window.append((now, current))
+            was_paused = paused
 
     threading.Thread(target=stats_loop, daemon=True).start()
 
     found_count = 0
     try:
         while not stop_event.is_set():
+            worker_control.wait_until_resumed(stop_event)
+            if stop_event.is_set():
+                break
             try:
                 address, salt = result_queue.get(timeout=0.5)
             except Exception:
                 continue
+            worker_control.wait_until_resumed(stop_event)
+            if stop_event.is_set():
+                break
             if address == "error":
                 emit({"type": "error", "message": salt, "fatal": True})
                 break
@@ -967,6 +1116,7 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
                 "zero_bytes": create2.zero_bytes(address),
             })
     finally:
+        worker_control.resume_all()
         stop_event.set()
         for p in procs:
             if isinstance(p, mp.Process):
@@ -979,7 +1129,7 @@ def generate_create2_json(params: "create2.Params", worker_override: Optional[in
             "reason": "user_stop",
             "total_checked": total,
             "found_count": found_count,
-            "elapsed_seconds": round(time.time() - start_time, 1),
+            "elapsed_seconds": round(worker_control.elapsed(start_time), 1),
             "rarity_1_in": (total // found_count) if found_count > 0 else None,
         })
 
@@ -1001,13 +1151,14 @@ def generate_tonsub_json(raw_key: str, pattern: str, mode: str, case_sensitive: 
         return
 
     stop_event = threading.Event()
+    worker_control = WorkerControl()
     signal.signal(signal.SIGINT, lambda *_: stop_event.set())
     signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
     workers = worker_override or (os.cpu_count() or 8)
     result_queue: Queue = mp.Queue()
     stats_counter = Value(ctypes.c_ulonglong, 0)
     engine, procs = tonsub.start_search(public_key, pattern, mode, case_sensitive, bounceable,
-                                        workers, result_queue, stats_counter, stop_event)
+                                        workers, result_queue, stats_counter, stop_event, worker_control)
     label = (_CUSTOM_MODE_LABELS_EN if lang == "en" else _CUSTOM_MODE_LABELS).get(mode, mode)
     conditions = f'"{pattern}" ({label})' + (" [Aa]" if case_sensitive else "")
     network_full = "TON · subwallet" if lang == "en" else "TON · подкошелёк"
@@ -1023,24 +1174,30 @@ def generate_tonsub_json(raw_key: str, pattern: str, mode: str, case_sensitive: 
         "gpu": {"available": engine == "ethvanity", "path": None, "tool": engine if engine == "ethvanity" else None},
         "fake": False,
     })
-    threading.Thread(target=stdin_listener, args=(stop_event,), daemon=True).start()
-    start_time = time.time()
+    threading.Thread(target=stdin_listener, args=(stop_event, worker_control), daemon=True).start()
+    start_time = time.monotonic()
 
     def stats_loop() -> None:
         window: "deque[Tuple[float, int]]" = deque([(start_time, 0)], maxlen=SPEED_WINDOW_TICKS + 1)
+        was_paused = False
         while not stop_event.is_set():
             time.sleep(STATS_UPDATE_INTERVAL)
-            now, current = time.time(), stats_counter.value
+            now, current = time.monotonic(), stats_counter.value
+            paused = worker_control.is_paused
+            if paused or was_paused:
+                window.clear()
+                window.append((now, current))
             oldest_time, oldest_count = window[0]
             dt = now - oldest_time
             emit({
                 "type": "stats",
-                "elapsed_seconds": round(now - start_time, 1),
+                "elapsed_seconds": round(worker_control.elapsed(start_time), 1),
                 "total_checked": current,
-                "speed": int((current - oldest_count) / dt) if dt > 0 else 0,
+                "speed": 0 if paused else (int((current - oldest_count) / dt) if dt > 0 else 0),
                 "workers_total": workers,
             })
             window.append((now, current))
+            was_paused = paused
 
     threading.Thread(target=stats_loop, daemon=True).start()
 
@@ -1048,10 +1205,16 @@ def generate_tonsub_json(raw_key: str, pattern: str, mode: str, case_sensitive: 
     expected_done = 1 if engine == "ethvanity" else workers
     try:
         while not stop_event.is_set():
+            worker_control.wait_until_resumed(stop_event)
+            if stop_event.is_set():
+                break
             try:
                 address, wallet_id = result_queue.get(timeout=0.5)
             except Exception:
                 continue
+            worker_control.wait_until_resumed(stop_event)
+            if stop_event.is_set():
+                break
             if address == "error":
                 emit({"type": "error", "message": wallet_id, "fatal": True})
                 break
@@ -1083,6 +1246,7 @@ def generate_tonsub_json(raw_key: str, pattern: str, mode: str, case_sensitive: 
                 "owner_pubkey": public_key.hex(),
             })
     finally:
+        worker_control.resume_all()
         stop_event.set()
         for p in procs:
             if isinstance(p, mp.Process):
@@ -1095,7 +1259,7 @@ def generate_tonsub_json(raw_key: str, pattern: str, mode: str, case_sensitive: 
             "reason": reason,
             "total_checked": total,
             "found_count": found_count,
-            "elapsed_seconds": round(time.time() - start_time, 1),
+            "elapsed_seconds": round(worker_control.elapsed(start_time), 1),
             "rarity_1_in": (total // found_count) if found_count > 0 else None,
         })
 

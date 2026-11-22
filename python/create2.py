@@ -273,32 +273,42 @@ def _goal_ok(params: Params, address: str) -> bool:
     return _goal_check(params)(bytes.fromhex(address[2:])) is not None
 
 
-def _launch(cmd: List[str], params: Params, result_queue, stats_counter, stop_event) -> subprocess.Popen:
+def _launch(cmd: List[str], params: Params, result_queue, stats_counter, stop_event,
+            worker_control=None) -> subprocess.Popen:
     """Запускает движок с построчным JSON на stdout и перекачивает его события
     в result_queue / stats_counter. Каждая находка перепроверяется здесь же:
     адрес пересчитывается из salt и должен совпасть и подойти под условие."""
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    if worker_control:
+        worker_control.register(proc)
 
     def pump() -> None:
         last_checked = 0
-        for line in iter(proc.stdout.readline, ""):
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if payload.get("type") == "stats":
-                checked = payload.get("checked", 0)
-                with stats_counter.get_lock():
-                    stats_counter.value += max(0, checked - last_checked)
-                last_checked = checked
-            elif payload.get("type") == "found":
-                address, salt = payload["address"], payload["salt"]
-                if params_address(params, salt) != address or not _goal_ok(params, address):
-                    result_queue.put(("error", f"engine returned a wrong salt {salt}"))
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
                     continue
-                result_queue.put((address, salt))
-            elif payload.get("type") == "error":
-                result_queue.put(("error", payload.get("message", "engine error")))
+                if payload.get("type") == "stats":
+                    checked = payload.get("checked", 0)
+                    with stats_counter.get_lock():
+                        stats_counter.value += max(0, checked - last_checked)
+                    last_checked = checked
+                elif payload.get("type") == "found":
+                    address, salt = payload["address"], payload["salt"]
+                    if params_address(params, salt) != address or not _goal_ok(params, address):
+                        result_queue.put(("error", f"engine returned a wrong salt {salt}"))
+                        continue
+                    result_queue.put((address, salt))
+                elif payload.get("type") == "error":
+                    result_queue.put(("error", payload.get("message", "engine error")))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            if worker_control:
+                worker_control.unregister(proc)
 
     threading.Thread(target=pump, daemon=True).start()
     threading.Thread(target=lambda: (stop_event.wait(), proc.kill()), daemon=True).start()
@@ -306,7 +316,8 @@ def _launch(cmd: List[str], params: Params, result_queue, stats_counter, stop_ev
 
 
 def start_search(params: Params, workers: int, result_queue, stats_counter, stop_event,
-                 engine_pref: str = "auto", gpu_limits: Tuple[str, ...] = ()) -> Tuple[str, List]:
+                 engine_pref: str = "auto", gpu_limits: Tuple[str, ...] = (),
+                 worker_control=None) -> Tuple[str, List]:
     """Запускает перебор: GPU (metalvanity), если он есть и не выбран CPU, иначе
     Rust-движок, иначе Python-процессы. Находки кладутся в result_queue как
     (address, salt). Возвращает имя движка и список запущенного (для остановки).
@@ -314,12 +325,12 @@ def start_search(params: Params, workers: int, result_queue, stats_counter, stop
     gpu = find_gpu_engine() if engine_pref != "cpu" else None
     if gpu:
         cmd = [gpu] + params.engine_args() + list(gpu_limits)
-        return "metal", [_launch(cmd, params, result_queue, stats_counter, stop_event)]
+        return "metal", [_launch(cmd, params, result_queue, stats_counter, stop_event, worker_control)]
 
     engine = find_engine()
     if engine:
         cmd = [engine, "--threads", str(workers)] + params.engine_args()
-        return "ethvanity", [_launch(cmd, params, result_queue, stats_counter, stop_event)]
+        return "ethvanity", [_launch(cmd, params, result_queue, stats_counter, stop_event, worker_control)]
 
     floor = params.min_bytes - 1 if params.goal in ("leading", "zeros") else 0
     best = mp.Value("i", floor)
@@ -329,6 +340,8 @@ def start_search(params: Params, workers: int, result_queue, stats_counter, stop
         p = mp.Process(target=python_worker, args=(params, i, result_queue, stats_counter, best), daemon=True)
         p.start()
         procs.append(p)
+        if worker_control:
+            worker_control.register(p)
     return "python", procs
 
 

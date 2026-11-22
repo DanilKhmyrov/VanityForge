@@ -871,9 +871,7 @@ private struct StartStopButton: View {
     @Environment(SessionViewModel.self) private var session
 
     var body: some View {
-        // Пульс только пока идёт поиск: TimelineView останавливается вместе с
-        // ним, в отличие от repeatForever, запущенного из onAppear (тот крутит
-        // анимацию всё время жизни view, даже когда кнопка неподвижна).
+        // Пульс активен только пока движки действительно считают адреса.
         if session.phase == .running {
             TimelineView(.animation) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
@@ -885,49 +883,87 @@ private struct StartStopButton: View {
     }
 
     private func button(pulse: Double) -> some View {
-        Button {
-            if session.isRunning { session.stop() } else { session.start() }
-        } label: {
-            HStack(spacing: 8) {
-                if session.phase == .stopping {
-                    ProgressView().controlSize(.small).tint(.white)
-                } else {
-                    Image(systemName: session.isRunning ? "stop.fill" : "bolt.fill")
+        HStack(spacing: 8) {
+            Button {
+                switch session.phase {
+                case .idle: session.start()
+                case .running: session.pause()
+                case .paused: session.resume()
+                case .pausing, .resuming, .stopping: break
                 }
-                Text(label)
-                    .font(.system(size: 14, weight: .semibold))
+            } label: {
+                HStack(spacing: 8) {
+                    if session.phase == .pausing || session.phase == .resuming || session.phase == .stopping {
+                        ProgressView().controlSize(.small).tint(.white)
+                    } else {
+                        Image(systemName: primaryIcon)
+                    }
+                    Text(primaryLabel)
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .foregroundStyle(.white)
+                .background(Capsule().fill(accentGradient))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.35 + pulse * 0.25), lineWidth: 1))
+                .shadow(color: buttonShadowColor.opacity(0.45 + pulse * 0.3), radius: 14 + pulse * 8, y: 6)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 13)
-            .foregroundStyle(.white)
-            .background(
-                Capsule().fill(
-                    session.isRunning
-                        ? LinearGradient(colors: [.red, .orange], startPoint: .leading, endPoint: .trailing)
-                        : accentGradient
-                )
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(Color.white.opacity(0.35 + pulse * 0.25), lineWidth: 1)
-            )
-            .shadow(color: buttonShadowColor.opacity(0.45 + pulse * 0.3), radius: 14 + pulse * 8, y: 6)
+            .buttonStyle(.plain)
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(primaryDisabled)
+
+            if session.isRunning {
+                Button { session.stop() } label: {
+                    Group {
+                        if session.phase == .stopping {
+                            ProgressView().controlSize(.small).tint(.white)
+                        } else {
+                            Image(systemName: "stop.fill")
+                        }
+                    }
+                    .frame(width: 46, height: 46)
+                    .foregroundStyle(.white)
+                    .background(Capsule().fill(Color.red.opacity(0.82)))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(session.phase == .stopping)
+                .help(session.t(.stopSearch))
+                .accessibilityLabel(session.t(.stopSearch))
+            }
         }
-        .buttonStyle(.plain)
-        .keyboardShortcut(.return, modifiers: .command)
-        .disabled((!session.canStart && !session.isRunning) || session.phase == .stopping)
     }
 
-    private var label: String {
+    private var primaryLabel: String {
         switch session.phase {
         case .idle: return session.t(.startSearch)
-        case .running: return session.t(.stopSearch)
+        case .running: return session.t(.pauseSearch)
+        case .pausing: return session.t(.pausing)
+        case .paused: return session.t(.resumeSearch)
+        case .resuming: return session.t(.resuming)
         case .stopping: return session.t(.stopping)
         }
     }
 
+    private var primaryIcon: String {
+        switch session.phase {
+        case .idle: return "bolt.fill"
+        case .running: return "pause.fill"
+        case .paused: return "play.fill"
+        case .pausing, .resuming, .stopping: return "bolt.fill"
+        }
+    }
+
+    private var primaryDisabled: Bool {
+        switch session.phase {
+        case .idle: return !session.canStart
+        case .pausing, .resuming, .stopping: return true
+        case .running, .paused: return false
+        }
+    }
+
     private var buttonShadowColor: Color {
-        session.isRunning ? .red : (session.accentKey.map(NetworkVisual.accent(for:)) ?? .accentColor)
+        session.accentKey.map(NetworkVisual.accent(for:)) ?? .accentColor
     }
 
     private var accentGradient: LinearGradient {

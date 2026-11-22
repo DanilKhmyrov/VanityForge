@@ -93,7 +93,8 @@ def python_worker(public_key: bytes, pattern: str, mode: str, case_sensitive: bo
 
 
 def start_search(public_key: bytes, pattern: str, mode: str, case_sensitive: bool, bounceable: bool,
-                 workers: int, result_queue, stats_counter, stop_event) -> Tuple[str, List]:
+                 workers: int, result_queue, stats_counter, stop_event,
+                 worker_control=None) -> Tuple[str, List]:
     """Находки — (address, wallet_id) в result_queue; ("done", 0) — пространство перебрано."""
     from create2 import find_engine
     import multiprocessing as mp
@@ -107,26 +108,35 @@ def start_search(public_key: bytes, pattern: str, mode: str, case_sensitive: boo
         if bounceable:
             cmd.append("--bounceable")
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        if worker_control:
+            worker_control.register(proc)
 
         def pump() -> None:
             last = 0
-            for line in iter(proc.stdout.readline, ""):
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                kind = payload.get("type")
-                if kind == "stats":
-                    checked = payload.get("checked", 0)
-                    with stats_counter.get_lock():
-                        stats_counter.value += max(0, checked - last)
-                    last = checked
-                elif kind == "found":
-                    result_queue.put((payload["address"], int(payload["wallet_id"])))
-                elif kind == "done":
-                    result_queue.put(("done", 0))
-                elif kind == "error":
-                    result_queue.put(("error", payload.get("message", "engine error")))
+            try:
+                for line in iter(proc.stdout.readline, ""):
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    kind = payload.get("type")
+                    if kind == "stats":
+                        checked = payload.get("checked", 0)
+                        with stats_counter.get_lock():
+                            stats_counter.value += max(0, checked - last)
+                        last = checked
+                    elif kind == "found":
+                        result_queue.put((payload["address"], int(payload["wallet_id"])))
+                    elif kind == "done":
+                        result_queue.put(("done", 0))
+                    elif kind == "error":
+                        result_queue.put(("error", payload.get("message", "engine error")))
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+                if worker_control:
+                    worker_control.unregister(proc)
 
         threading.Thread(target=pump, daemon=True).start()
         threading.Thread(target=lambda: (stop_event.wait(), proc.kill()), daemon=True).start()
@@ -139,6 +149,8 @@ def start_search(public_key: bytes, pattern: str, mode: str, case_sensitive: boo
                              result_queue, stats_counter))
         p.start()
         procs.append(p)
+        if worker_control:
+            worker_control.register(p)
     return "python", procs
 
 
