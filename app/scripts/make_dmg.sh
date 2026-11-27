@@ -54,6 +54,13 @@ DEVICE="$(/usr/libexec/PlistBuddy -c "Print :system-entities:0:dev-entry" "$ATTA
 rm -f "$ATTACH_PLIST"
 SetFile -a C "$MOUNT_DIR" || true
 
+# Finder узнаёт о новом томе не сразу: без ожидания `tell disk` ниже иногда
+# падает с -1728 («не удаётся получить disk»), хотя том уже смонтирован.
+for _ in $(seq 1 30); do
+    [ "$(osascript -e "tell application \"Finder\" to exists disk \"$BUILD_VOLNAME\"" 2>/dev/null)" = "true" ] && break
+    sleep 0.5
+done
+
 osascript <<APPLESCRIPT
 tell application "Finder"
     tell disk "$BUILD_VOLNAME"
