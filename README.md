@@ -12,6 +12,9 @@ A generator for "vanity" crypto addresses: **EVM (ETH, BSC, Polygon, etc.)**, **
 - **GPU (Metal):** EVM and TRON at tens of millions of addresses per second; the load can be capped at 25/50/75%
 - **Contracts:** mining a salt for CREATE2 or CREATE3 (CreateX) — leading zeros, zero bytes, a prefix, Uniswap v4 hook flags
 - **Split-key:** mine a vanity EVM/TRON address for a client who sends only a public key — only they will know the private key
+- **Avatar:** draw an 8×8 blockies icon (the one Etherscan and MetaMask show) and pick its colors — the GPU finds an address with that icon
+- **Bycatch:** while the GPU searches for your condition it also catches addresses that are pretty on their own (9+ identical characters at an edge, words like `deadc0ffee`), at no speed cost
+- **Address rating:** paste any address to see what makes it pretty, how rare that is and how long it would take to find on your Mac; save the result as an image
 - Exact rarity and time estimates, the chance of having found something by now; impossible patterns are flagged before the start
 - Find cards with the matching part highlighted, a QR code, a block-explorer link; history of all finds
 - The Mac doesn't sleep during a search, a find counter on the Dock icon, notifications; UI in English and Russian

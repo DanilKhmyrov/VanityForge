@@ -6,12 +6,13 @@ struct ContentView: View {
     @State private var tab: Tab = .live
 
     enum Tab: CaseIterable, Hashable {
-        case live, history
+        case live, history, rarity
 
         func label(_ lang: AppLanguage) -> String {
             switch self {
             case .live: return L.tabSearch.s(lang)
             case .history: return L.tabHistory.s(lang)
+            case .rarity: return L.tabRarity.s(lang)
             }
         }
     }
@@ -36,6 +37,8 @@ struct ContentView: View {
                         LiveFeedView()
                     case .history:
                         HistoryView()
+                    case .rarity:
+                        RarityCheckerView()
                     }
                 }
                 .padding(24)

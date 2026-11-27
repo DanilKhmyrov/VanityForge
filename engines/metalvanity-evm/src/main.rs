@@ -15,6 +15,7 @@
 //!
 //!   metalvanity-evm --target dead:beef [--target :0000 ...] [--prefix dead] [--suffix beef]
 //!                   [--tron-target TXyz:abc ...] [--split-key <публичный ключ заказчика>]
+//!                   [--avatar <описание blockies>] [--bycatch-run R] [--bycatch-word hex ...]
 //!                   [--threads N] [--batch B] [--reseed-secs S]
 //!                   [--gpu-load 1..100] [--max-speed адресов/с]
 //!
@@ -350,12 +351,184 @@ impl Contains {
     }
 }
 
+/// Побочный улов: адреса, которые не подходят под цель, но сами по себе
+/// красивые — серия из `run` одинаковых символов на краю или слово из словаря
+/// в начале либо в конце. Ядро сравнивает только 8 крайних полубайтов слова,
+/// слово целиком сверяет `matches`.
+struct Bycatch {
+    run: u32,
+    words: Vec<Vec<u8>>,
+}
+
+const MAX_RUN: u32 = 24;
+const MIN_BYCATCH_WORD: usize = 8;
+
+impl Bycatch {
+    fn none() -> Bycatch {
+        Bycatch { run: 0, words: Vec::new() }
+    }
+
+    fn parse_word(raw: &str) -> Vec<u8> {
+        let nibbles: Option<Vec<u8>> = raw.chars().map(|c| c.to_digit(16).map(|d| d as u8)).collect();
+        match nibbles {
+            Some(n) if n.len() >= MIN_BYCATCH_WORD && n.len() <= 40 => n,
+            _ => fail("bycatch word must be 8..40 hex characters"),
+        }
+    }
+
+    fn key(nibbles: &[u8]) -> u32 {
+        nibbles.iter().fold(0u32, |acc, &d| (acc << 4) | d as u32)
+    }
+
+    /// Секция ядра: R, ключи начала по возрастанию, ключи конца по возрастанию.
+    fn words(&self) -> Vec<u32> {
+        let sorted = |keys: Vec<u32>| {
+            let mut keys = keys;
+            keys.sort_unstable();
+            keys.dedup();
+            keys
+        };
+        let pre = sorted(self.words.iter().map(|w| Bycatch::key(&w[..8])).collect());
+        let suf = sorted(self.words.iter().map(|w| Bycatch::key(&w[w.len() - 8..])).collect());
+        let mut out = vec![self.run, pre.len() as u32];
+        out.extend(&pre);
+        out.push(suf.len() as u32);
+        out.extend(&suf);
+        out
+    }
+
+    fn matches(&self, address: &[u8; 20]) -> bool {
+        let hex: Vec<u8> = to_hex(address).bytes().collect();
+        let run_start = hex.iter().take_while(|&&c| c == hex[0]).count() as u32;
+        let run_end = hex.iter().rev().take_while(|&&c| c == hex[39]).count() as u32;
+        if self.run > 0 && (run_start >= self.run || run_end >= self.run) {
+            return true;
+        }
+        let digits: Vec<u8> = hex.iter().map(|&c| (c as char).to_digit(16).unwrap() as u8).collect();
+        self.words.iter().any(|w| digits.starts_with(w) || digits.ends_with(w))
+    }
+}
+
+/// Аватарка blockies (Etherscan, MetaMask) — раскладка и формулы как в ядре
+/// (avatar_hit). Описание: `cells=<32 символа>;miss=N;color=h1-h2/l1-l2;bg=…;spot=…`,
+/// клетки — левая половина 8×8 построчно по 4: «.» любая, b фон, c цвет, s пятна.
+struct Avatar {
+    misses: u32,
+    cells: [u8; 32],
+    colors: [[u32; 4]; 3],
+}
+
+const ANY_COLOR: [u32; 4] = [0, 359, 0, 200];
+
+impl Avatar {
+    fn parse(spec: &str) -> Avatar {
+        let mut avatar = Avatar { misses: 0, cells: [3; 32], colors: [ANY_COLOR; 3] };
+        for part in spec.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+            let (name, value) = part.split_once('=').unwrap_or_else(|| fail("avatar spec: expected name=value"));
+            match name {
+                "cells" => {
+                    if value.chars().count() != 32 {
+                        fail("avatar spec: cells must be 32 characters");
+                    }
+                    for (i, c) in value.chars().enumerate() {
+                        avatar.cells[i] = match c {
+                            'b' => 0,
+                            'c' => 1,
+                            's' => 2,
+                            '.' => 3,
+                            _ => fail("avatar spec: cells use . b c s"),
+                        };
+                    }
+                }
+                "miss" => avatar.misses = value.parse().unwrap_or_else(|_| fail("avatar spec: bad miss")),
+                "color" | "bg" | "spot" => {
+                    let slot = ["color", "bg", "spot"].iter().position(|n| *n == name).unwrap();
+                    let numbers: Vec<u32> = value
+                        .split(['-', '/'])
+                        .map(|v| v.parse().unwrap_or_else(|_| fail("avatar spec: bad color range")))
+                        .collect();
+                    if numbers.len() != 4 || numbers[0] > 359 || numbers[1] > 359 || numbers[2] > numbers[3] {
+                        fail("avatar spec: color is hue-hue/light-light");
+                    }
+                    avatar.colors[slot] = [numbers[0], numbers[1], numbers[2], numbers[3]];
+                }
+                _ => fail("avatar spec: unknown part"),
+            }
+        }
+        avatar
+    }
+
+    /// Секция ядра; без аватарки — 16 нулей (ядро смотрит только на флаг).
+    fn words(avatar: Option<&Avatar>) -> Vec<u32> {
+        let mut out = vec![0u32; 16];
+        if let Some(a) = avatar {
+            out[0] = 1;
+            out[1] = a.misses;
+            for (i, &c) in a.cells.iter().enumerate() {
+                out[2 + i / 16] |= (c as u32) << (2 * (i % 16));
+            }
+            for (slot, color) in a.colors.iter().enumerate() {
+                out[4 + slot * 4..8 + slot * 4].copy_from_slice(color);
+            }
+        }
+        out
+    }
+
+    fn matches(&self, address: &[u8; 20]) -> bool {
+        let mut s = [0u32; 4];
+        for (i, c) in format!("0x{}", to_hex(address)).bytes().enumerate() {
+            s[i % 4] = s[i % 4].wrapping_mul(31).wrapping_add(c as u32);
+        }
+        let mut next = || {
+            let t = s[0] ^ (s[0] << 11);
+            s[0] = s[1];
+            s[1] = s[2];
+            s[2] = s[3];
+            s[3] = ((s[3] as i32) ^ ((s[3] as i32) >> 19) ^ (t as i32) ^ ((t as i32) >> 8)) as u32;
+            s[3] as u64
+        };
+        for spec in &self.colors {
+            let hue = ((next() * 360) >> 31) as u32 % 360;
+            next();
+            let l25 = (next() + next() + next() + next()) * 25;
+            let hue_ok = if spec[0] <= spec[1] { hue >= spec[0] && hue <= spec[1] } else { hue >= spec[0] || hue <= spec[1] };
+            if !hue_ok || l25 < (spec[2] as u64) << 31 || l25 > (spec[3] as u64) << 31 {
+                return false;
+            }
+        }
+        let mut miss = 0;
+        for &want in &self.cells {
+            let v = (next() * 23) / (10u64 << 31);
+            let cell = v.min(2) as u8;
+            if want != 3 && want != cell {
+                miss += 1;
+                if miss > self.misses {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+/// Цели сверх шаблонов адреса: улов и аватарка.
+struct Extra {
+    bycatch: Bycatch,
+    avatar: Option<Avatar>,
+}
+
+impl Extra {
+    fn none() -> Extra {
+        Extra { bycatch: Bycatch::none(), avatar: None }
+    }
+}
+
 struct Hit {
     thread: u32,
     run: u64,
     j: u32, // смещение в окне 0..2B
     address: [u8; 20],
-    network: u32, // 0 — EVM, 1 — TRON
+    network: u32, // 0 — EVM, 1 — TRON, 2 — побочный улов, 3 — аватарка
 }
 
 struct Gpu {
@@ -372,7 +545,7 @@ struct Gpu {
 
 impl Gpu {
     fn new(threads: u32, batch: u32, capacity: u32, start: &[PublicKey], patterns: &[Pattern], tron: &[TronTarget],
-           contains: &Contains) -> Gpu {
+           contains: &Contains, extra: &Extra) -> Gpu {
         let device = Device::system_default().unwrap_or_else(|| fail("no Metal device"));
         let library = device
             .new_library_with_source(KERNEL, &CompileOptions::new())
@@ -408,6 +581,8 @@ impl Gpu {
         let eth_section: Vec<(Vec<u8>, bool)> = contains.eth.iter().map(|n| (n.clone(), false)).collect();
         cfg.extend(Contains::words(&eth_section, 11));
         cfg.extend(Contains::words(&contains.tron_section(), 10));
+        cfg.extend(extra.bycatch.words());
+        cfg.extend(Avatar::words(extra.avatar.as_ref()));
 
         let slots = (0..2)
             .map(|_| (device.new_buffer(4, shared), device.new_buffer(capacity as u64 * 32, shared)))
@@ -508,11 +683,23 @@ fn verify(
     patterns: &[Pattern],
     tron: &[TronTarget],
     contains: &Contains,
+    extra: &Extra,
 ) -> Option<(SecretKey, String)> {
     let key = keys.key(hit);
     let address = eth_address(&keys.public(secp, &key));
     if address != hit.address {
         fail(&format!("GPU result mismatch: thread {} run {} j {}", hit.thread, hit.run, hit.j));
+    }
+    let evm = || (key, format!("0x{}", to_hex(&address)));
+    if hit.network == 2 {
+        // Ядро сравнило только крайние 8 полубайтов слова — остальное отсеиваем тут.
+        return extra.bycatch.matches(&address).then(evm);
+    }
+    if hit.network == 3 {
+        if !extra.avatar.as_ref().is_some_and(|a| a.matches(&address)) {
+            fail(&format!("GPU avatar mismatch: thread {} run {} j {}", hit.thread, hit.run, hit.j));
+        }
+        return Some(evm());
     }
     if hit.network == 1 {
         let text = tron_address(&address);
@@ -538,7 +725,7 @@ fn self_test() -> ! {
     let client = PublicKey::from_secret_key(&secp, &SecretKey::new(&mut OsRng));
     for (name, base) in [("evm", None), ("evm split-key", Some(client))] {
         let keys = Keys::random(threads, batch, base);
-        let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &everything, &[], &Contains::none());
+        let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &everything, &[], &Contains::none(), &Extra::none());
         for run in 0..3u64 {
             let command = gpu.submit(0);
             let hits = gpu.collect(0, &command, run);
@@ -546,7 +733,7 @@ fn self_test() -> ! {
                 fail(&format!("{name} run {run}: expected {} hits, got {}", threads * window, hits.len()));
             }
             for hit in &hits {
-                verify(&secp, &keys, hit, &everything, &[], &Contains::none());
+                verify(&secp, &keys, hit, &everything, &[], &Contains::none(), &Extra::none());
             }
             println!("{{\"type\":\"self_test\",\"case\":\"{name}\",\"run\":{run},\"checked\":{},\"ok\":true}}", hits.len());
         }
@@ -555,21 +742,41 @@ fn self_test() -> ! {
     // TRON и «содержит»: GPU должен найти ровно то, что находит CPU перебором
     // всех кандидатов.
     let tron = [TronTarget::parse("TX:"), TronTarget::parse(":a"), TronTarget::parse("TR:z")];
-    let cases: [(&str, &[TronTarget], Contains); 4] = [
-        ("tron", &tron, Contains::none()),
-        ("tron contains", &[], Contains { tron: vec![Contains::parse_tron("abc"), Contains::parse_tron("Zz")], ..Contains::none() }),
-        ("tron contains, any case", &[], Contains { tron_folded: vec![Contains::parse_tron_folded("aBc"), Contains::parse_tron_folded("tr")], ..Contains::none() }),
-        ("evm contains", &[], Contains { eth: vec![Contains::parse_eth("abc"), Contains::parse_eth("0f0")], ..Contains::none() }),
+    let avatar = |spec: &str| Extra { bycatch: Bycatch::none(), avatar: Some(Avatar::parse(spec)) };
+    let cases: [(&str, &[TronTarget], Contains, Extra); 8] = [
+        ("tron", &tron, Contains::none(), Extra::none()),
+        ("tron contains", &[], Contains { tron: vec![Contains::parse_tron("abc"), Contains::parse_tron("Zz")], ..Contains::none() }, Extra::none()),
+        ("tron contains, any case", &[], Contains { tron_folded: vec![Contains::parse_tron_folded("aBc"), Contains::parse_tron_folded("tr")], ..Contains::none() }, Extra::none()),
+        ("evm contains", &[], Contains { eth: vec![Contains::parse_eth("abc"), Contains::parse_eth("0f0")], ..Contains::none() }, Extra::none()),
+        ("bycatch runs", &[], Contains::none(), Extra { bycatch: Bycatch { run: 3, words: Vec::new() }, avatar: None }),
+        // Слова подставляются ниже — из адресов настоящих кандидатов этого прогона.
+        ("bycatch words", &[], Contains::none(), Extra::none()),
+        ("avatar cells", &[], Contains::none(), avatar("cells=cs.b............................;miss=1")),
+        ("avatar colors", &[], Contains::none(), avatar("color=300-60/0-200;bg=0-359/0-60;cells=..s.............................")),
     ];
-    for (name, tron, contains) in cases.iter() {
+    for (name, tron, contains, extra) in cases.iter() {
         let keys = Keys::random(threads, batch, None);
-        let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &[], tron, contains);
+        let mut words_extra = Extra::none();
+        let extra = if *name == "bycatch words" {
+            // Начало одного кандидата и конец другого: GPU должен найти их
+            // (и всё, что случайно совпало по 8 полубайтам, отсеет хост).
+            let address = |t: u32, j: u32| {
+                let hit = Hit { thread: t, run: 1, j, address: [0; 20], network: 2 };
+                to_hex(&eth_address(&keys.public(&secp, &keys.key(&hit))))
+            };
+            let (a, b) = (address(7, 3), address(300, 100));
+            words_extra.bycatch = Bycatch { run: 0, words: vec![Bycatch::parse_word(&a[..9]), Bycatch::parse_word(&b[30..])] };
+            &words_extra
+        } else {
+            extra
+        };
+        let gpu = Gpu::new(threads, batch, capacity, &keys.points(), &[], tron, contains, extra);
         for run in 0..2u64 {
             let command = gpu.submit(0);
             let mut found: Vec<String> = gpu
                 .collect(0, &command, run)
                 .iter()
-                .filter_map(|hit| verify(&secp, &keys, hit, &[], tron, contains).map(|(_, a)| a))
+                .filter_map(|hit| verify(&secp, &keys, hit, &[], tron, contains, extra).map(|(_, a)| a))
                 .collect();
             let mut expected: Vec<String> = Vec::new();
             for t in 0..threads {
@@ -580,7 +787,10 @@ fn self_test() -> ! {
                     if tron.iter().any(|target| target.matches(&text)) || contains.tron_matches(&text) {
                         expected.push(text);
                     }
-                    if contains.eth_matches(&raw) {
+                    if contains.eth_matches(&raw) || extra.bycatch.matches(&raw) {
+                        expected.push(format!("0x{}", to_hex(&raw)));
+                    }
+                    if extra.avatar.as_ref().is_some_and(|a| a.matches(&raw)) {
                         expected.push(format!("0x{}", to_hex(&raw)));
                     }
                 }
@@ -641,7 +851,24 @@ fn main() {
             .and_then(|b| PublicKey::from_slice(&b).ok())
             .unwrap_or_else(|| fail("--split-key must be a secp256k1 public key (33 or 65 bytes hex)"))
     });
-    if patterns.is_empty() && tron.is_empty() && contains.eth.is_empty() && contains.tron_section().is_empty() {
+    let bycatch_words: Vec<Vec<u8>> = args
+        .windows(2)
+        .filter(|w| w[0] == "--bycatch-word")
+        .map(|w| Bycatch::parse_word(&w[1].to_lowercase()))
+        .collect();
+    let extra = Extra {
+        bycatch: Bycatch {
+            run: value_of("--bycatch-run").and_then(|v| v.parse().ok()).unwrap_or(0u32).min(MAX_RUN),
+            words: bycatch_words,
+        },
+        avatar: value_of("--avatar").map(|spec| Avatar::parse(&spec)),
+    };
+    if extra.bycatch.words.len() > 4 * MAX_PATTERNS {
+        fail("too many bycatch words");
+    }
+    if patterns.is_empty() && tron.is_empty() && contains.eth.is_empty() && contains.tron_section().is_empty()
+        && extra.avatar.is_none()
+    {
         eprintln!("usage: metalvanity-evm --target <prefix>:<suffix> [--tron-target <prefix>:<suffix>] [...]");
         std::process::exit(1);
     }
@@ -659,7 +886,7 @@ fn main() {
     };
 
     let mut keys = Keys::random(threads, batch, split_base);
-    let gpu = Gpu::new(threads, batch, 1024, &keys.points(), &patterns, &tron, &contains);
+    let gpu = Gpu::new(threads, batch, 1024, &keys.points(), &patterns, &tron, &contains, &extra);
     let secp = Secp256k1::new();
     let per_run = threads as u64 * (2 * batch as u64 + 1);
 
@@ -676,10 +903,15 @@ fn main() {
 
     let report = |hits: Vec<Hit>, keys: &Keys| {
         for hit in hits {
-            if let Some((key, address)) = verify(&secp, keys, &hit, &patterns, &tron, &contains) {
+            if let Some((key, address)) = verify(&secp, keys, &hit, &patterns, &tron, &contains, &extra) {
                 let network = if hit.network == 1 { "trx" } else { "eth" };
+                let kind = match hit.network {
+                    2 => ",\"bycatch\":true",
+                    3 => ",\"avatar\":true",
+                    _ => "",
+                };
                 println!(
-                    "{{\"type\":\"found\",\"network\":\"{network}\",\"address\":\"{address}\",\"private_key\":\"{}\"}}",
+                    "{{\"type\":\"found\",\"network\":\"{network}\",\"address\":\"{address}\",\"private_key\":\"{}\"{kind}}}",
                     to_hex(&key.secret_bytes())
                 );
             }

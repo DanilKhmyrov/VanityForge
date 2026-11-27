@@ -3,13 +3,22 @@ import Foundation
 /// Что ищем: адреса кошельков (приватные ключи) или адреса контрактов
 /// (salt для CREATE2 — майнинг для заказчика, ключей нет вообще).
 enum SearchMode: String, Codable, CaseIterable, Identifiable {
-    case wallets, contracts
+    case wallets, avatar, contracts
     var id: String { rawValue }
 
     func label(_ lang: AppLanguage) -> String {
         switch self {
         case .wallets: return L.modeWallets.s(lang)
+        case .avatar: return L.modeAvatar.s(lang)
         case .contracts: return L.modeContracts.s(lang)
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .wallets: return "key.fill"
+        case .avatar: return "square.grid.3x3.fill"
+        case .contracts: return "doc.text.fill"
         }
     }
 }

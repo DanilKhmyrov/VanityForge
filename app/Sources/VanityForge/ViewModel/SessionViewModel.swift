@@ -111,6 +111,26 @@ final class SessionViewModel {
     var gpuLoad: Int = 100
     static let gpuLoadSteps = [25, 50, 75, 100]
 
+    /// Цель поиска по аватарке blockies (режим .avatar).
+    var avatarTarget: AvatarTarget = AvatarTarget(rows: AvatarDrawing.smile.rows) {
+        didSet { if avatarTarget != oldValue { saveSettings() } }
+    }
+    /// Побочный улов на видеокарте: красивые адреса, которые не подходят под условие.
+    var bycatchEnabled: Bool = true {
+        didSet { if bycatchEnabled != oldValue { saveSettings() } }
+    }
+    /// Улов последнего поиска — отдельно от находок: не входит ни в счётчик, ни в редкость.
+    var bycatchItems: [FoundEvent] = []
+    static let maxDisplayedBycatch = 100
+    /// Улов идёт только на GPU и без split-key (там ключ не наш).
+    var bycatchAvailable: Bool {
+        switch searchMode {
+        case .contracts: return false
+        case .avatar: return willUseGPU
+        case .wallets: return willUseGPU && !splitKeyEnabled
+        }
+    }
+
     var create2FactoryAddress: String {
         create2Factory.address ?? create2CustomFactory.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -245,7 +265,8 @@ final class SessionViewModel {
 
     /// Пойдёт ли текущий поиск кошельков на видеокарту: GPU-движок знает EVM и TRON.
     var willUseGPU: Bool {
-        useGPU && !fakeMode && !selectedNetworks.isEmpty && selectedNetworks.isSubset(of: ["eth", "trx"])
+        if searchMode == .avatar { return useGPU }
+        return useGPU && !fakeMode && !selectedNetworks.isEmpty && selectedNetworks.isSubset(of: ["eth", "trx"])
     }
 
     static var appVersion: String {
@@ -289,6 +310,7 @@ final class SessionViewModel {
     /// Редкость текущего условия (1 к N) — для шанса находки и оценок времени.
     var targetRarity: UInt64? {
         if searchMode == .contracts { return create2Rarity }
+        if searchMode == .avatar { return avatarTarget.rarity }
         if isCustomPreset {
             return catalog.customPatternRarity(pattern: trimmedCustomPattern, mode: customPatternMode,
                                                networks: selectedNetworks, caseSensitive: customPatternCaseSensitive)
@@ -335,6 +357,7 @@ final class SessionViewModel {
     /// Убирает карточки из ленты (файлы находок на диске не трогает).
     func clearFeed() {
         foundItems = []
+        bycatchItems = []
         balancesBySeq = [:]
         balanceLoading = []
         balanceFailed = []
@@ -344,7 +367,13 @@ final class SessionViewModel {
     var orderedNetworks: [String] { catalog.networkOrder.filter { selectedNetworks.contains($0) } }
 
     /// Ключ цвета для фона/кнопок: у режима контрактов свой акцент.
-    var accentKey: String? { searchMode == .contracts ? contractKind.rawValue : orderedNetworks.first }
+    var accentKey: String? {
+        switch searchMode {
+        case .contracts: return contractKind.rawValue
+        case .avatar: return "avatar"
+        case .wallets: return orderedNetworks.first
+        }
+    }
 
     var availablePresets: [PresetItem] { catalog.presetOptions(for: selectedNetworks) }
 
@@ -361,6 +390,7 @@ final class SessionViewModel {
             if create2Goal == .prefix { return create2PrefixValid }
             return true
         }
+        if searchMode == .avatar { return !avatarTarget.isEmpty }
         guard !selectedNetworks.isEmpty else { return false }
         if splitKeyEnabled { guard splitKeyValid, splitKeyNetworksOK, !fakeMode else { return false } }
         if isCustomPreset { return !trimmedCustomPattern.isEmpty && customPatternPossible }
@@ -412,6 +442,8 @@ final class SessionViewModel {
         var gpuLoad: Int?
         var lastMeasuredCreate2Speed: Double?
         var lastMeasuredCreate3Speed: Double?
+        var avatarTarget: AvatarTarget?
+        var bycatchEnabled: Bool?
     }
 
     /// Настройки запоминаются между запусками приложения — чтобы не
@@ -452,7 +484,9 @@ final class SessionViewModel {
             useGPU: useGPU,
             gpuLoad: gpuLoad,
             lastMeasuredCreate2Speed: lastMeasuredCreate2Speed,
-            lastMeasuredCreate3Speed: lastMeasuredCreate3Speed
+            lastMeasuredCreate3Speed: lastMeasuredCreate3Speed,
+            avatarTarget: avatarTarget,
+            bycatchEnabled: bycatchEnabled
         )
         guard let data = try? JSONEncoder().encode(settings) else { return }
         UserDefaults.standard.set(data, forKey: Self.settingsKey)
@@ -498,12 +532,15 @@ final class SessionViewModel {
         if let load = settings.gpuLoad, Self.gpuLoadSteps.contains(load) { gpuLoad = load }
         lastMeasuredCreate2Speed = settings.lastMeasuredCreate2Speed
         lastMeasuredCreate3Speed = settings.lastMeasuredCreate3Speed
+        if let target = settings.avatarTarget, target.cells.count == AvatarTarget.cellCount { avatarTarget = target }
+        bycatchEnabled = settings.bycatchEnabled ?? true
     }
 
     func start() {
         guard phase == .idle, canStart else { return }
         saveSettings()
         foundItems = []
+        bycatchItems = []
         stats = nil
         displaySpeed = 0
         speedHistory = []
@@ -531,6 +568,16 @@ final class SessionViewModel {
             return
         }
 
+        if searchMode == .avatar {
+            let stream = bridge.start(
+                networks: ["eth"], preset: "all", workerCount: workerCount, language: language,
+                useGPU: useGPU, gpuLoad: gpuLoad, avatarSpec: avatarTarget.spec,
+                bycatch: bycatchEnabled && bycatchAvailable
+            )
+            consume(stream)
+            return
+        }
+
         let networks = orderedNetworks
         let fake = fakeMode ? 0.8 : nil
         let customPattern: (text: String, mode: CustomPatternMode, caseSensitive: Bool)? =
@@ -540,7 +587,8 @@ final class SessionViewModel {
         let stream = bridge.start(
             networks: networks, preset: preset, fakeFoundInterval: fake,
             workerCount: workerCount, customPattern: customPattern, language: language, words: words,
-            splitKey: splitKeyEnabled ? splitKeyTrimmed : nil, useGPU: useGPU, gpuLoad: gpuLoad
+            splitKey: splitKeyEnabled ? splitKeyTrimmed : nil, useGPU: useGPU, gpuLoad: gpuLoad,
+            bycatch: bycatchEnabled && bycatchAvailable
         )
         consume(stream)
     }
@@ -573,6 +621,12 @@ final class SessionViewModel {
             displaySpeed = displaySpeed == 0 ? Double(e.speed) : (smoothing * Double(e.speed) + (1 - smoothing) * displaySpeed)
             speedHistory.append(SpeedSample(elapsed: e.elapsedSeconds, speed: displaySpeed))
             if speedHistory.count > 180 { speedHistory.removeFirst(speedHistory.count - 180) }
+        case .found(let e) where e.isBycatch:
+            burstSeed += 1
+            bycatchItems.insert(e, at: 0)
+            if bycatchItems.count > Self.maxDisplayedBycatch {
+                bycatchItems.removeLast(bycatchItems.count - Self.maxDisplayedBycatch)
+            }
         case .found(let e):
             totalFoundCount += 1
             burstSeed += 1

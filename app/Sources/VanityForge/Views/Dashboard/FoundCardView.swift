@@ -19,7 +19,7 @@ struct FoundCardView: View {
     @State private var justArrived = true
     @State private var hovering = false
 
-    private var accent: Color { NetworkVisual.accent(for: event.network) }
+    private var accent: Color { NetworkVisual.accent(for: event.isBycatch ? "bycatch" : event.network) }
     private var balances: [String: Double]? { session.balancesBySeq[event.seq] }
     private var fileURL: URL { ResultsLocation.resolve(event.filepath) }
 
@@ -82,7 +82,10 @@ struct FoundCardView: View {
             if !event.isContract {
                 FlowLayout(spacing: 5) {
                     ForEach(event.matchedDesc, id: \.self) { desc in
-                        badge(desc, color: .white)
+                        badge(desc, color: event.isBycatch ? .yellow : .white)
+                    }
+                    if let bycatch = event.bycatch {
+                        badge("1 : \(Format.compact(bycatch.rarity1In, session.language))", color: .yellow)
                     }
                     ForEach(event.foundWords, id: \.self) { word in
                         Label(word, systemImage: "sparkles")
@@ -113,6 +116,11 @@ struct FoundCardView: View {
 
     private var addressRow: some View {
         HStack(spacing: 8) {
+            if event.network == "eth" {
+                // Так адрес выглядит в Etherscan и MetaMask; у находок по аватарке — крупнее.
+                BlockieView(address: event.address, size: event.matched.contains("_avatar") ? 44 : 26)
+                    .help("blockies")
+            }
             HighlightedAddress(address: event.address, highlights: highlightRanges, accent: accent, size: 15)
                 .textSelection(.enabled)
             Spacer(minLength: 4)
@@ -456,6 +464,7 @@ struct FoundCardView: View {
         }
 
         var words = event.foundWords.map { $0.lowercased() }
+        if let bycatch = event.bycatch { words.append(bycatch.text.lowercased()) }
         if event.matched.contains("deadprefixsuffix") { words.append("dead") }
         if event.matched.contains(SessionViewModel.customPresetKey) {
             let pattern = session.customPatternText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

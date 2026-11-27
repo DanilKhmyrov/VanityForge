@@ -24,6 +24,8 @@ struct StartedEvent: Codable, Hashable {
     let workersTotal: Int
     let gpu: GPUInfo
     let fake: Bool
+    /// Видеокарта ловит побочный улов (только кошельки на GPU).
+    let bycatch: Bool?
 
     enum CodingKeys: String, CodingKey {
         case networks
@@ -34,6 +36,7 @@ struct StartedEvent: Codable, Hashable {
         case workersTotal = "workers_total"
         case gpu
         case fake
+        case bycatch
     }
 }
 
@@ -75,10 +78,13 @@ struct FoundEvent: Codable, Hashable, Identifiable {
     /// Только для split-key: добавка k и публичный ключ заказчика.
     let tweak: String?
     let clientPubkey: String?
+    /// Побочный улов: адрес не по условию, но красив сам по себе (bycatch.py).
+    let bycatch: BycatchInfo?
 
     var id: Int { seq }
     var isContract: Bool { salt != nil }
     var isSplitKey: Bool { tweak != nil }
+    var isBycatch: Bool { bycatch != nil }
 
     enum CodingKeys: String, CodingKey {
         case seq
@@ -101,7 +107,35 @@ struct FoundEvent: Codable, Hashable, Identifiable {
         case zeroBytes = "zero_bytes"
         case tweak
         case clientPubkey = "client_pubkey"
+        case bycatch
     }
+}
+
+struct BycatchInfo: Codable, Hashable {
+    /// "run" — серия одинаковых символов, "word" — слово из словаря.
+    let kind: String
+    /// "start" или "end".
+    let position: String
+    let text: String
+    let word: String?
+    let length: Int
+    let rarity1In: UInt64
+    let desc: String
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case position = "where"
+        case text
+        case word
+        case length
+        case rarity1In = "rarity_1_in"
+        case desc
+    }
+}
+
+struct BycatchWord: Codable, Hashable {
+    let hex: String
+    let word: String
 }
 
 struct BalanceEvent: Codable, Hashable {
@@ -151,6 +185,7 @@ struct PresetsEvent: Codable, Hashable {
     let alphabetSizes: [String: Int]
     let bodyLengths: [String: Int]
     let defaultWords: [String]
+    let bycatchWords: [BycatchWord]?
 
     enum CodingKeys: String, CodingKey {
         case networkOrder = "network_order"
@@ -159,6 +194,7 @@ struct PresetsEvent: Codable, Hashable {
         case alphabetSizes = "alphabet_sizes"
         case bodyLengths = "body_lengths"
         case defaultWords = "default_words"
+        case bycatchWords = "bycatch_words"
     }
 }
 

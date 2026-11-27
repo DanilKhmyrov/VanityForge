@@ -195,6 +195,72 @@ enum L: String {
     case useGPUHintContracts
     case useGPUHintWallets
 
+    // MARK: Улов, аватарка, оценка
+    case bycatchTitle
+    case bycatchToggle
+    case bycatchToggleHint
+    case bycatchCount
+    case bycatchCPUNote
+    case modeAvatar
+    case sectionAvatarDrawing
+    case sectionAvatarColors
+    case avatarHint
+    case avatarMisses
+    case avatarColorMain
+    case avatarColorBackground
+    case avatarColorSpot
+    case avatarDrawingSmile
+    case avatarDrawingHeart
+    case avatarDrawingFrame
+    case avatarDrawingCross
+    case avatarDrawingPlain
+    case avatarDrawingClear
+    case avatarEmpty
+    case avatarSpotsNote
+    case avatarGPUOnly
+    case liveFeedIdleAvatar
+    case swatchAny
+    case swatchRed
+    case swatchOrange
+    case swatchYellow
+    case swatchGreen
+    case swatchCyan
+    case swatchBlue
+    case swatchPurple
+    case swatchPink
+    case swatchLight
+    case swatchDark
+    case tabRarity
+    case rarityTitle
+    case raritySubtitle
+    case rarityPlaceholder
+    case rarityUnknown
+    case rarityNothing
+    case rarityOneIn
+    case rarityBits
+    case rarityTimeOnMac
+    case rarityBetterThan
+    case rarityFeaturesTitle
+    case rarityCopyCard
+    case raritySaveCard
+    case rarityCardFooter
+    case rarityRecentFinds
+    case rarityRunStart
+    case rarityRunEnd
+    case rarityRunInside
+    case rarityWordStart
+    case rarityWordEnd
+    case rarityMirror
+    case rarityDigitsOnly
+    case rarityLettersOnly
+    case rarityFewChars
+    case tierOrdinary
+    case tierNice
+    case tierRare
+    case tierVeryRare
+    case tierExceptional
+    case tierLegendary
+
     func s(_ lang: AppLanguage) -> String {
         Self.table[self]?[lang] ?? rawValue
     }
@@ -369,5 +435,69 @@ enum L: String {
         .useGPUHintContracts: [.ru: "Metal, в ~5 раз быстрее процессора. Выключите, если видеокарта нужна под другое.", .en: "Metal, about 5× faster than the CPU. Turn off if you need the GPU for something else."],
         .sectionKind: [.ru: "Способ развёртывания", .en: "Deployment method"],
         .unitAttemptsPerSec: [.ru: "попыток/с", .en: "tries/s"],
+        .bycatchTitle: [.ru: "Попалось по пути", .en: "Caught along the way"],
+        .bycatchToggle: [.ru: "Побочный улов", .en: "Bycatch"],
+        .bycatchToggleHint: [.ru: "Видеокарта заодно ловит адреса, которые не подходят под условие, но красивы сами по себе: 9+ одинаковых символов на краю или слово вроде deadc0ffee. Скорость не падает.", .en: "The GPU also catches addresses that miss the condition but are pretty on their own: 9+ identical characters at an edge or a word like deadc0ffee. No speed cost."],
+        .bycatchCount: [.ru: "улов: ", .en: "bycatch: "],
+        .bycatchCPUNote: [.ru: "Только на видеокарте", .en: "GPU only"],
+        .modeAvatar: [.ru: "Аватарка", .en: "Avatar"],
+        .sectionAvatarDrawing: [.ru: "Рисунок", .en: "Drawing"],
+        .sectionAvatarColors: [.ru: "Цвета", .en: "Colors"],
+        .avatarHint: [.ru: "Иконка адреса в Etherscan и MetaMask (blockies). Щёлкайте клетки: любая → фон → цвет → пятна. Правая половина — зеркало левой.", .en: "The address icon in Etherscan and MetaMask (blockies). Click cells: any → background → color → spots. The right half mirrors the left."],
+        .avatarMisses: [.ru: "Может не совпасть клеток", .en: "Cells allowed to differ"],
+        .avatarColorMain: [.ru: "Цвет", .en: "Color"],
+        .avatarColorBackground: [.ru: "Фон", .en: "Background"],
+        .avatarColorSpot: [.ru: "Пятна", .en: "Spots"],
+        .avatarDrawingSmile: [.ru: "Смайлик", .en: "Smiley"],
+        .avatarDrawingHeart: [.ru: "Сердце", .en: "Heart"],
+        .avatarDrawingFrame: [.ru: "Рамка", .en: "Frame"],
+        .avatarDrawingCross: [.ru: "Крест", .en: "Cross"],
+        .avatarDrawingPlain: [.ru: "Чистый фон", .en: "Plain"],
+        .avatarDrawingClear: [.ru: "Сбросить", .en: "Clear"],
+        .avatarEmpty: [.ru: "Нарисуйте что-нибудь или выберите цвет", .en: "Draw something or pick a color"],
+        .avatarSpotsNote: [.ru: "Пятна выпадают в 13% клеток, фон и цвет — в 43%: рисунок из пятен в разы реже.", .en: "Spots fill 13% of cells, background and color 43% each: a drawing made of spots is far rarer."],
+        .avatarGPUOnly: [.ru: "Без видеокарты аватарка ищется на процессоре — в сотни раз медленнее", .en: "Without the GPU the avatar is searched on the CPU — hundreds of times slower"],
+        .liveFeedIdleAvatar: [.ru: "Нарисуйте аватарку слева — найдём адрес с такой иконкой", .en: "Draw an avatar on the left — we'll find an address with that icon"],
+        .swatchAny: [.ru: "любой", .en: "any"],
+        .swatchRed: [.ru: "красный", .en: "red"],
+        .swatchOrange: [.ru: "оранжевый", .en: "orange"],
+        .swatchYellow: [.ru: "жёлтый", .en: "yellow"],
+        .swatchGreen: [.ru: "зелёный", .en: "green"],
+        .swatchCyan: [.ru: "бирюзовый", .en: "cyan"],
+        .swatchBlue: [.ru: "синий", .en: "blue"],
+        .swatchPurple: [.ru: "фиолетовый", .en: "purple"],
+        .swatchPink: [.ru: "розовый", .en: "pink"],
+        .swatchLight: [.ru: "светлый", .en: "light"],
+        .swatchDark: [.ru: "тёмный", .en: "dark"],
+        .tabRarity: [.ru: "Оценка", .en: "Rate"],
+        .rarityTitle: [.ru: "Насколько красив адрес", .en: "How rare is an address"],
+        .raritySubtitle: [.ru: "Вставьте любой адрес — свой, чужой, из обозревателя. Ничего никуда не отправляется: всё считается здесь.", .en: "Paste any address — yours, someone else's, from an explorer. Nothing is sent anywhere: it's all computed locally."],
+        .rarityPlaceholder: [.ru: "0x…, T…, адрес Solana или TON", .en: "0x…, T…, a Solana or TON address"],
+        .rarityUnknown: [.ru: "Не похоже на адрес EVM, TRON, Solana или TON", .en: "Doesn't look like an EVM, TRON, Solana or TON address"],
+        .rarityNothing: [.ru: "Ничего особенного — обычный случайный адрес", .en: "Nothing special — an ordinary random address"],
+        .rarityOneIn: [.ru: "1 из {n} адресов", .en: "1 in {n} addresses"],
+        .rarityBits: [.ru: "бит редкости", .en: "bits of rarity"],
+        .rarityTimeOnMac: [.ru: "Столько искать на этом Mac", .en: "Time to find on this Mac"],
+        .rarityBetterThan: [.ru: "редче, чем {p} адресов", .en: "rarer than {p} of addresses"],
+        .rarityFeaturesTitle: [.ru: "Что в нём красивого", .en: "What makes it pretty"],
+        .rarityCopyCard: [.ru: "Скопировать картинку", .en: "Copy image"],
+        .raritySaveCard: [.ru: "Сохранить PNG", .en: "Save PNG"],
+        .rarityCardFooter: [.ru: "оценка редкости адреса", .en: "address rarity check"],
+        .rarityRecentFinds: [.ru: "Из последних находок", .en: "From recent finds"],
+        .rarityRunStart: [.ru: "{n} × «{c}» в начале", .en: "{n} × '{c}' at the start"],
+        .rarityRunEnd: [.ru: "{n} × «{c}» в конце", .en: "{n} × '{c}' at the end"],
+        .rarityRunInside: [.ru: "{n} × «{c}» подряд внутри", .en: "{n} × '{c}' in a row inside"],
+        .rarityWordStart: [.ru: "«{w}» в начале", .en: "'{w}' at the start"],
+        .rarityWordEnd: [.ru: "«{w}» в конце", .en: "'{w}' at the end"],
+        .rarityMirror: [.ru: "Зеркальные края: {n} символов", .en: "Mirrored edges: {n} characters"],
+        .rarityDigitsOnly: [.ru: "Только цифры", .en: "Digits only"],
+        .rarityLettersOnly: [.ru: "Только буквы", .en: "Letters only"],
+        .rarityFewChars: [.ru: "Всего {n} разных символов", .en: "Only {n} distinct characters"],
+        .tierOrdinary: [.ru: "обычный", .en: "ordinary"],
+        .tierNice: [.ru: "симпатичный", .en: "nice"],
+        .tierRare: [.ru: "редкий", .en: "rare"],
+        .tierVeryRare: [.ru: "очень редкий", .en: "very rare"],
+        .tierExceptional: [.ru: "исключительный", .en: "exceptional"],
+        .tierLegendary: [.ru: "легендарный", .en: "legendary"],
     ]
 }

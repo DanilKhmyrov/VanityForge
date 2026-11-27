@@ -28,6 +28,8 @@ from datetime import datetime
 from multiprocessing import Queue, Value
 from typing import List, Optional, Tuple
 
+import avatar
+import bycatch
 import create2
 import engines
 import main as core
@@ -46,6 +48,11 @@ STATS_UPDATE_INTERVAL = 1.0
 SPEED_WINDOW_TICKS = 6
 
 CUSTOM_KEY = "_custom"
+# Поиск по аватарке blockies (avatar.py) — пресет только для EVM.
+AVATAR_KEY = "_avatar"
+# Побочный улов (bycatch.py) — не условие поиска, а отдельная лента находок.
+BYCATCH_KEY = "bycatch"
+BYCATCH_SEQ_BASE = 1_000_000
 # Потолок находок, для которых пишем файл/эмитим детальное событие/дёргаем
 # баланс за один запуск — защита от слишком "широких" паттернов (короткий
 # префикс и т.п.), которые иначе заваливают диск и UI тысячами находок в
@@ -155,6 +162,17 @@ def install_custom_preset(pattern: str, mode: str, case_sensitive: bool = False,
         presets[CUSTOM_KEY] = (desc, predicate)
 
 
+def install_avatar_preset(spec: "avatar.AvatarSpec", lang: str = "ru") -> None:
+    """Аватарка как пресет AVATAR_KEY: словарь пресетов у сетей общий, поэтому
+    предикат сам отбрасывает не-EVM адреса (AvatarSpec.matches ждёт 0x…)."""
+    seen = set()
+    for presets in NETWORK_PRESETS.values():
+        if id(presets) in seen:
+            continue
+        seen.add(id(presets))
+        presets[AVATAR_KEY] = (spec.describe(lang), spec.matches)
+
+
 def install_word_list(words: List[str]) -> None:
     """Подменяет patterns.SEARCH_WORDS на выбор пользователя (чекбоксы +
     свои слова в UI). Мутирует атрибут модуля, а не локальную привязку —
@@ -260,10 +278,39 @@ def build_split_event(seq: int, network_name: str, address: str, tweak: str,
     }
 
 
+def build_bycatch_event(seq: int, address: str, private_key: str, info: dict, lang: str = "ru") -> dict:
+    """Побочный улов: адрес не подходит под цель, но красив сам по себе."""
+    desc = bycatch.describe(info, lang)
+    filepath = save_result("eth", address, private_key, [BYCATCH_KEY], desc)
+    checksum = None
+    if core._TO_CHECKSUM:
+        try:
+            checksum = core._TO_CHECKSUM(address)
+        except Exception:
+            checksum = None
+    return {
+        "type": "found",
+        "seq": seq,
+        "network": "eth",
+        "network_full": NETWORKS["eth"].name(),
+        "address": address,
+        "checksum_address": checksum if checksum != address else None,
+        "private_key": private_key,
+        "matched": [BYCATCH_KEY],
+        "matched_desc": [desc],
+        "conditions_str": desc,
+        "found_words": [],
+        "filepath": filepath,
+        "found_at": datetime.now().isoformat(timespec="seconds"),
+        "bycatch": {**info, "desc": desc},
+    }
+
+
 def cpu_worker_with_custom(network_name: str, preset_key: str, result_queue: "mp.Queue",
                             stats_counter, worker_id: int,
                             custom_pattern: Optional[Tuple[str, str, bool]] = None,
-                            words: Optional[List[str]] = None) -> None:
+                            words: Optional[List[str]] = None,
+                            avatar_spec: Optional[str] = None) -> None:
     """Обёртка над cpu_worker для mp.Process-воркеров.
 
     macOS использует multiprocessing 'spawn': каждый дочерний процесс —
@@ -276,6 +323,8 @@ def cpu_worker_with_custom(network_name: str, preset_key: str, result_queue: "mp
         install_custom_preset(pattern, mode, case_sensitive=case_sensitive)
     if words is not None:
         install_word_list(words)
+    if avatar_spec:
+        install_avatar_preset(avatar.AvatarSpec.parse(avatar_spec))
     cpu_worker(network_name, preset_key, result_queue, stats_counter, worker_id)
 
 
@@ -366,6 +415,11 @@ def _pump_eth_engine(cmd: List[str], preset_key: str, result_queue: "mp.Queue", 
             private_key = str(payload.get("private_key", ""))
             if _engine_address(network, private_key, split_key) != address:
                 emit({"type": "error", "message": f"engine returned a wrong key for {address}", "fatal": False})
+                continue
+            if payload.get("bycatch"):
+                info = bycatch.classify(address)
+                if info:
+                    result_queue.put((network, address, private_key, [BYCATCH_KEY], info))
                 continue
             presets = NETWORK_PRESETS.get(network, PRESETS)
             matched = [
@@ -498,12 +552,18 @@ def gpu_limit_args(args: List[str]) -> Tuple[str, ...]:
 
 def metal_eth_worker(binary_path: str, eth_targets: Optional[List[str]], trx_targets: Optional[List[str]],
                      preset_key: str, result_queue: "mp.Queue", stats_counter, stop_event,
-                     gpu_limits: Tuple[str, ...] = (), split_key: Optional[str] = None) -> None:
+                     gpu_limits: Tuple[str, ...] = (), split_key: Optional[str] = None,
+                     avatar_spec: Optional[str] = None, with_bycatch: bool = False) -> None:
     """GPU-движок проверяет ETH и TRON на одних и тех же кандидатах: у обеих
-    сетей из одного ключа одинаковые 20 байт адреса."""
+    сетей из одного ключа одинаковые 20 байт адреса. Там же — аватарка и
+    побочный улов (его находки приходят с пометкой bycatch)."""
     cmd = [binary_path] + list(gpu_limits)
     if split_key:
         cmd += ["--split-key", split_key]
+    if avatar_spec:
+        cmd += ["--avatar", avatar_spec]
+    if with_bycatch and not split_key:
+        cmd += bycatch.engine_args()
     for target in eth_targets or []:
         cmd += ["--target", target]
     for target in trx_targets or []:
@@ -548,7 +608,22 @@ def generate_vanity_json(networks: List[str], preset_key: str,
                           words: Optional[List[str]] = None,
                           split_key: Optional[str] = None,
                           engine_pref: str = "auto",
-                          gpu_limits: Tuple[str, ...] = ()) -> None:
+                          gpu_limits: Tuple[str, ...] = (),
+                          avatar_spec: Optional[str] = None,
+                          with_bycatch: bool = False) -> None:
+    if avatar_spec:
+        try:
+            spec = avatar.AvatarSpec.parse(avatar_spec)
+        except ValueError as error:
+            emit({"type": "error", "message": str(error), "fatal": True})
+            return
+        if networks != ["eth"] or split_key:
+            message = ("Аватарка ищется только для EVM, без split-key" if lang != "en"
+                       else "Avatars are searched for EVM only, without split-key")
+            emit({"type": "error", "message": message, "fatal": True})
+            return
+        install_avatar_preset(spec, lang=lang)
+        preset_key = AVATAR_KEY
     if split_key:
         unsupported = [n for n in networks if n not in splitkey.NETWORKS_SUPPORTED]
         try:
@@ -595,11 +670,13 @@ def generate_vanity_json(networks: List[str], preset_key: str,
             gpu_eth_targets = eth_hex_targets(preset_key, custom_pattern, allow_contains=True)
         if "trx" in networks:
             gpu_trx_targets = tron_targets(preset_key, custom_pattern)
-        if gpu_eth_targets or gpu_trx_targets:
+        if gpu_eth_targets or gpu_trx_targets or avatar_spec:
             gpu_path = find_gpu_eth()
         if not gpu_path:
             gpu_eth_targets = gpu_trx_targets = None
     gpu_nets = [n for n, t in (("eth", gpu_eth_targets), ("trx", gpu_trx_targets)) if t]
+    if avatar_spec and gpu_path:
+        gpu_nets = ["eth"]
 
     # ETH без GPU: ethvanity (Rust, CPU) — по тем же целям «начало:конец», что и GPU.
     eth_tool_path: Optional[str] = None
@@ -645,7 +722,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         if gpu_nets:
             t = threading.Thread(target=metal_eth_worker, daemon=True, args=(
                 gpu_path, gpu_eth_targets, gpu_trx_targets, preset_key, result_queue, stats_counter,
-                stop_event, gpu_limits, split_key))
+                stop_event, gpu_limits, split_key, avatar_spec, with_bycatch))
             t.start()
             procs.append(t)
             effective_workers += 1
@@ -668,7 +745,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
                 else:
                     p = mp.Process(
                         target=cpu_worker_with_custom,
-                        args=(net, preset_key, result_queue, stats_counter, i, custom_pattern, words),
+                        args=(net, preset_key, result_queue, stats_counter, i, custom_pattern, words, avatar_spec),
                     )
                 p.start()
                 procs.append(p)
@@ -686,6 +763,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         "workers_total": workers_total,
         "gpu": gpu_info,
         "fake": bool(fake_found_interval),
+        "bycatch": bool(with_bycatch and gpu_nets and not split_key),
     })
 
     stdin_thread = threading.Thread(target=stdin_listener, args=(stop_event,), daemon=True)
@@ -722,14 +800,21 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     stats_thread.start()
 
     found_count = 0
+    bycatch_count = 0
     detailed_emitted = 0
     throttled_notified = False
     start_time = time.time()
     try:
         while not stop_event.is_set():
             try:
-                network_name, address, private_key, matched, _ = result_queue.get(timeout=0.5)
+                network_name, address, private_key, matched, extra = result_queue.get(timeout=0.5)
             except Exception:
+                continue
+            if matched == [BYCATCH_KEY]:
+                # Улов не входит в счётчик находок и редкость цели.
+                bycatch_count += 1
+                if bycatch_count <= MAX_DETAILED_FINDS:
+                    emit(build_bycatch_event(BYCATCH_SEQ_BASE + bycatch_count, address, private_key, extra, lang))
                 continue
             found_count += 1
 
@@ -873,6 +958,7 @@ def emit_presets() -> None:
         "alphabet_sizes": ALPHABET_SIZES,
         "body_lengths": BODY_LENGTHS,
         "default_words": list(patterns.SEARCH_WORDS),
+        "bycatch_words": [{"hex": h, "word": w} for h, w in bycatch.WORDS.items()],
     })
 
 
@@ -1230,10 +1316,15 @@ def main() -> None:
         except IndexError:
             split_key = None
 
+    avatar_spec: Optional[str] = None
+    if "--avatar" in args and args.index("--avatar") + 1 < len(args):
+        avatar_spec = args[args.index("--avatar") + 1].strip() or None
+
     engine_pref = args[args.index("--engine") + 1] if "--engine" in args and args.index("--engine") + 1 < len(args) else "auto"
     generate_vanity_json(networks, preset_key, fake_found_interval, worker_override, custom_pattern,
                           lang=lang, words=words_override, split_key=split_key, engine_pref=engine_pref,
-                          gpu_limits=gpu_limit_args(args))
+                          gpu_limits=gpu_limit_args(args), avatar_spec=avatar_spec,
+                          with_bycatch="--bycatch" in args)
 
 
 if __name__ == "__main__":

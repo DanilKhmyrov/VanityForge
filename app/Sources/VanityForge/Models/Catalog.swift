@@ -12,6 +12,8 @@ enum NetworkVisual {
         "ton": [Color(red: 0.16, green: 0.64, blue: 0.98), Color(red: 0.42, green: 0.86, blue: 1.00)],
         "create2": [Color(red: 0.98, green: 0.72, blue: 0.22), Color(red: 0.96, green: 0.42, blue: 0.30)],
         "create3": [Color(red: 0.36, green: 0.86, blue: 0.62), Color(red: 0.18, green: 0.62, blue: 0.86)],
+        "avatar": [Color(red: 0.93, green: 0.36, blue: 0.72), Color(red: 0.55, green: 0.40, blue: 0.98)],
+        "bycatch": [Color(red: 0.98, green: 0.80, blue: 0.25), Color(red: 0.95, green: 0.55, blue: 0.20)],
     ]
 
     static func gradient(for key: String) -> LinearGradient {
@@ -42,6 +44,8 @@ final class AppCatalog {
     /// Дефолтные слова для условия "word" — приходят из patterns.py, чтобы
     /// не дублировать список в Swift (см. WordListInput в NetworkPresetPicker).
     private(set) var defaultWords: [String] = []
+    /// Словарь побочного улова (bycatch.py) — нужен оценщику адресов.
+    private(set) var bycatchWords: [BycatchWord] = []
     private(set) var isLoaded = false
     private(set) var loadFailed = false
 
@@ -56,6 +60,7 @@ final class AppCatalog {
         alphabetSizes = event.alphabetSizes
         bodyLengths = event.bodyLengths
         defaultWords = event.defaultWords
+        bycatchWords = event.bycatchWords ?? []
         isLoaded = true
     }
 

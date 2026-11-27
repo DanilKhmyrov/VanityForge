@@ -43,7 +43,8 @@ final class PythonBridge {
     func start(networks: [String], preset: String, fakeFoundInterval: Double? = nil, workerCount: Int? = nil,
                customPattern: (text: String, mode: CustomPatternMode, caseSensitive: Bool)? = nil,
                language: AppLanguage = .ru, words: [String]? = nil, splitKey: String? = nil,
-               useGPU: Bool = true, gpuLoad: Int = 100) -> AsyncStream<BridgeEvent> {
+               useGPU: Bool = true, gpuLoad: Int = 100, avatarSpec: String? = nil,
+               bycatch: Bool = false) -> AsyncStream<BridgeEvent> {
         var arguments = [networks.joined(separator: ","), preset, "--lang", language.rawValue,
                          "--engine", useGPU ? "auto" : "cpu"]
         if gpuLoad < 100 { arguments += ["--gpu-load", String(gpuLoad)] }
@@ -64,6 +65,12 @@ final class PythonBridge {
         }
         if let splitKey {
             arguments += ["--split-key", splitKey]
+        }
+        if let avatarSpec {
+            arguments += ["--avatar", avatarSpec]
+        }
+        if bycatch {
+            arguments += ["--bycatch"]
         }
         return run(arguments: arguments, language: language)
     }

@@ -44,9 +44,20 @@ struct NetworkPresetPicker: View {
                                 cardDivider
                                 GPUToggle(hint: session.t(.useGPUHintWallets), cpuFallback: !session.willUseGPU && !session.fakeMode)
                                 cardDivider
+                                BycatchToggle()
+                                cardDivider
                                 workerControl
                                 cardDivider
                                 demoToggle
+                            }
+                        }
+                    } else if session.searchMode == .avatar {
+                        AvatarForm()
+                        section(session.t(.sectionSettings)) {
+                            settingsCard {
+                                GPUToggle(hint: session.t(.avatarGPUOnly))
+                                cardDivider
+                                BycatchToggle()
                             }
                         }
                     } else {
@@ -822,8 +833,9 @@ private struct SearchModeSwitcher: View {
                 Button {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { session.searchMode = mode }
                 } label: {
-                    Label(mode.label(session.language), systemImage: mode == .wallets ? "key.fill" : "doc.text.fill")
-                        .font(.system(size: 11.5, weight: .medium))
+                    Label(mode.label(session.language), systemImage: mode.icon)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
                         .padding(.vertical, 6)
                         .frame(maxWidth: .infinity)
                         .background {

@@ -11,7 +11,8 @@
 // Поле: 8 слов по 32 бита, little-endian (v[0] — младшее).
 // cfg: [0] threads, [1] B, [2] capacity, [3] число шаблонов K, дальше K шаблонов
 //      по 10 слов: значение (5) и маска (5) — адрес подходит, если совпал с любым.
-// out: по 8 uint на совпадение — поток, смещение в окне (0..2B, центр = B), адрес (5 слов), 0.
+// out: по 8 uint на совпадение — поток, смещение в окне (0..2B, центр = B), адрес (5 слов),
+//      что совпало: 0 — EVM, 1 — TRON, 2 — побочный улов, 3 — аватарка.
 
 #include <metal_stdlib>
 using namespace metal;
@@ -353,6 +354,103 @@ static inline void tron_digits(thread const uint *v, uint chk, thread uchar *dig
     }
 }
 
+// ---- Побочный улов: длинная серия на краю адреса или слово из словаря ----
+
+static inline bool sorted_has(constant uint *keys, uint n, uint key) {
+    uint lo = 0, hi = n;
+    while (lo < hi) {
+        uint mid = (lo + hi) >> 1;
+        if (keys[mid] < key) lo = mid + 1; else hi = mid;
+    }
+    return lo < n && keys[lo] == key;
+}
+
+// Длина серии одинаковых полубайтов с начала адреса (до 24).
+static inline uint run_from_start(thread const uint *a) {
+    uint w = bswap(a[0]);
+    uint rep = (w >> 28) * 0x11111111u;
+    uint d = w ^ rep;
+    if (d != 0) return clz(d) >> 2;
+    d = bswap(a[1]) ^ rep;
+    if (d != 0) return 8 + (clz(d) >> 2);
+    return 16 + (clz(bswap(a[2]) ^ rep) >> 2);
+}
+
+// Длина серии одинаковых полубайтов с конца адреса (до 24).
+static inline uint run_from_end(thread const uint *a) {
+    uint w = bswap(a[4]);
+    uint rep = (w & 0xfu) * 0x11111111u;
+    uint d = w ^ rep;
+    if (d != 0) return ctz(d) >> 2;
+    d = bswap(a[3]) ^ rep;
+    if (d != 0) return 8 + (ctz(d) >> 2);
+    return 16 + (ctz(bswap(a[2]) ^ rep) >> 2);
+}
+
+// Улов: [0] R — минимальная серия на краю (0 — без серий), [1] n и n ключей
+// по возрастанию — первые 8 полубайтов слов для начала, затем m и m ключей —
+// последние 8 полубайтов слов для конца. Ключ — грубый фильтр: слово целиком
+// (оно длиннее 8 полубайтов) сверяет хост.
+static inline bool bycatch_hit(thread const uint *a, constant uint *bc) {
+    uint r = bc[0];
+    if (r != 0 && (run_from_start(a) >= r || run_from_end(a) >= r)) return true;
+    uint n = bc[1];
+    if (n != 0 && sorted_has(bc + 2, n, bswap(a[0]))) return true;
+    constant uint *suf = bc + 2 + n;
+    return suf[0] != 0 && sorted_has(suf + 1, suf[0], bswap(a[4]));
+}
+
+// ---- Аватарка: blockies (Etherscan, MetaMask) от адреса в нижнем регистре ----
+//
+// Как в ethereum/blockies: сид — строка «0x…», четыре 32-битных слова
+// h = h·31 + символ по кругу, затем xorshift128 со знаковыми сдвигами — у
+// результата всегда нулевой старший бит, и rand() = u / 2^31 лежит в [0, 1).
+// Целочисленные формулы ниже совпадают с JS без округлений (оттенок, яркость)
+// или почти (клетки).
+
+static inline uint xs_next(thread uint *s) {
+    uint t = s[0] ^ (s[0] << 11);
+    s[0] = s[1]; s[1] = s[2]; s[2] = s[3];
+    s[3] = uint(int(s[3]) ^ (int(s[3]) >> 19) ^ int(t) ^ (int(t) >> 8));
+    return s[3];
+}
+
+// Цвет: оттенок floor(rand·360) mod 360, насыщенность (не проверяется),
+// яркость (rand·4)·25 %. spec: оттенок от, до (по кругу), яркость от, до (%).
+static inline bool blockie_color_ok(thread uint *s, constant uint *spec) {
+    uint hue = uint((ulong(xs_next(s)) * 360u) >> 31) % 360u;
+    xs_next(s);
+    ulong sum = ulong(xs_next(s));
+    sum += xs_next(s);
+    sum += xs_next(s);
+    sum += xs_next(s);
+    ulong l25 = sum * 25u;  // яркость ≥ x % ⇔ l25 ≥ x·2^31
+    bool hue_ok = spec[0] <= spec[1] ? (hue >= spec[0] && hue <= spec[1]) : (hue >= spec[0] || hue <= spec[1]);
+    return hue_ok && l25 >= (ulong(spec[2]) << 31) && l25 <= (ulong(spec[3]) << 31);
+}
+
+// Аватарка: [0] 0/1, [1] сколько клеток может не совпасть, [2..3] 32 клетки
+// левой половины (8 строк × 4, правая — зеркало) по 2 бита: 0 фон, 1 цвет,
+// 2 пятна, 3 любая; [4..15] цвет, фон, пятна — по 4 слова, как в blockie_color_ok.
+static inline bool avatar_hit(thread const uint *a, constant uint *av) {
+    uint s[4] = { 48u, 120u, 0u, 0u };  // «0», «x»
+    for (int i = 0; i < 40; i++) {
+        uint n = nibble_at(a, i);
+        uint k = uint(i + 2) & 3u;
+        s[k] = s[k] * 31u + (n < 10 ? 48u + n : 87u + n);
+    }
+    for (int c = 0; c < 3; c++)
+        if (!blockie_color_ok(s, av + 4 + c * 4)) return false;
+    uint miss = 0;
+    for (int c = 0; c < 32; c++) {
+        uint v = uint((ulong(xs_next(s)) * 23u) / (10ul << 31));  // floor(rand·2.3): 0..4
+        uint cell = v >= 2 ? 2u : v;
+        uint want = (av[2 + (c >> 4)] >> (2 * (c & 15))) & 3u;
+        if (want != 3u && want != cell && ++miss > av[1]) return false;
+    }
+    return true;
+}
+
 // cfg после ETH-шаблонов — три секции подряд, каждая начинается с числа записей:
 //   TRON-цели по 20 слов:
 //     [0] флаги (1 — есть начало, 2 — есть конец), [1] k — длина конца (≤ 10),
@@ -393,6 +491,13 @@ static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint of
         }
     }
     if (eth_hit) record(t, offset, a, 0, cfg, hits, out);
+
+    // За «содержит» TRON — улов и аватарка (раскладка — у bycatch_hit и avatar_hit).
+    constant uint *bycatch = tron_contains + 1 + ntc * 10;
+    constant uint *avatar = bycatch + 2 + bycatch[1] + 1 + bycatch[2 + bycatch[1]];
+    if (!eth_hit && (bycatch[0] | bycatch[1] | bycatch[2 + bycatch[1]]) != 0 && bycatch_hit(a, bycatch))
+        record(t, offset, a, 2, cfg, hits, out);
+    if (avatar[0] != 0 && avatar_hit(a, avatar)) record(t, offset, a, 3, cfg, hits, out);
 
     if (ntron == 0 && ntc == 0) return;
     uint v[6] = { 0x41u, bswap(a[0]), bswap(a[1]), bswap(a[2]), bswap(a[3]), bswap(a[4]) };
