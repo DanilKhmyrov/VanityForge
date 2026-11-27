@@ -56,12 +56,17 @@ struct RarityReport {
 enum RarityAnalyzer {
     private static let base58 = Set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
     private static let tonChars = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+    private static let bech32Chars = Set("qpzry9x8gf2tvdw0s3jn54khce6mua7l")
 
-    /// Сеть по виду адреса: eth, trx, sol, ton или nil.
+    /// Сеть по виду адреса: eth, trx, btc (bc1q…), btc1 (1…), sol, ton или nil.
     static func network(of raw: String) -> String? {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.count == 42, s.hasPrefix("0x"), s.dropFirst(2).allSatisfy(\.isHexDigit) { return "eth" }
         if s.count == 34, s.hasPrefix("T"), s.allSatisfy(base58.contains) { return "trx" }
+        let lower = s.lowercased()
+        if s.count == 42, lower.hasPrefix("bc1q"), (s == lower || s == s.uppercased()),
+           lower.dropFirst(4).allSatisfy(bech32Chars.contains) { return "btc" }
+        if (26...34).contains(s.count), s.hasPrefix("1"), s.allSatisfy(base58.contains) { return "btc1" }
         if s.count == 48, ["EQ", "UQ", "kQ", "0Q"].contains(String(s.prefix(2))), s.allSatisfy(tonChars.contains) { return "ton" }
         if (32...44).contains(s.count), s.allSatisfy(base58.contains) { return "sol" }
         return nil
@@ -69,8 +74,9 @@ enum RarityAnalyzer {
 
     /// words — слова для поиска в начале и в конце: hex (для EVM) или любые.
     static func analyze(_ raw: String, words: [String], lang: AppLanguage) -> RarityReport? {
-        let address = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var address = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let network = network(of: address) else { return nil }
+        if network == "eth" { address = Keccak.checksumAddress(address) }
         let features = network == "eth"
             ? evmFeatures(address, words: words, lang: lang)
             : textFeatures(address, network: network, words: words, lang: lang)
@@ -124,6 +130,15 @@ enum RarityAnalyzer {
         if body.allSatisfy(\.isNumber) { add(L.rarityDigitsOnly.s(lang), pow(10.0 / 16, Double(n))) }
         if body.allSatisfy({ !$0.isNumber }) { add(L.rarityLettersOnly.s(lang), pow(6.0 / 16, Double(n))) }
 
+        // EIP-55: регистр каждой буквы — бит хеша, то есть монетка на букву.
+        let checksum = Array(Keccak.checksumAddress(address).dropFirst(2))
+        let letters = checksum.filter(\.isLetter)
+        if letters.count >= 8 {
+            let p = pow(0.5, Double(letters.count))
+            if letters.allSatisfy(\.isUppercase) { add(L.rarityChecksumUpper.s(lang).fill(letters.count, nil), p) }
+            if letters.allSatisfy(\.isLowercase) { add(L.rarityChecksumLower.s(lang).fill(letters.count, nil), p) }
+        }
+
         let distinct = Set(body).count
         if distinct <= 8 {
             // Все символы — из какого-то набора размера k: C(16, k)·(k/16)^n (верхняя оценка).
@@ -137,9 +152,15 @@ enum RarityAnalyzer {
 
     private static func textFeatures(_ address: String, network: String, words: [String], lang: AppLanguage) -> [RarityFeature] {
         let chars = Array(address)
-        let alphabet: Double = network == "ton" ? 64 : 58
-        // У TRON первая T всегда, у TON — двухбуквенный тег.
-        let skip = network == "trx" ? 1 : (network == "ton" ? 2 : 0)
+        let alphabet: Double = network == "ton" ? 64 : (network == "btc" ? 32 : 58)
+        // У TRON первая T всегда, у Bitcoin — «1» или «bc1q», у TON — двухбуквенный тег.
+        let skip: Int
+        switch network {
+        case "trx", "btc1": skip = 1
+        case "ton": skip = 2
+        case "btc": skip = 4
+        default: skip = 0
+        }
         let body = Array(chars[skip...])
         let n = body.count
         var out: [RarityFeature] = []
@@ -153,7 +174,7 @@ enum RarityAnalyzer {
         if tail >= 3 { add(L.rarityRunEnd.s(lang).fill(tail, body[n - 1]), pow(alphabet, -Double(tail - 1)), n - tail, tail) }
 
         let lower = String(body).lowercased()
-        let valid = network == "ton" ? tonChars : base58
+        let valid = network == "ton" ? tonChars : (network == "btc" ? bech32Chars : base58)
         for word in Set(words.map { $0.lowercased() }) where word.count >= 3 {
             // Без учёта регистра: у буквы до двух написаний в алфавите.
             let p = word.reduce(1.0) { acc, c in

@@ -100,6 +100,13 @@ struct BlockieView: View {
 
 // MARK: - Цель поиска по аватарке
 
+/// Какую иконку ищем: Etherscan (blockies, рисуется по клеткам) или
+/// MetaMask (jazzicon, выбирается из галереи — зависит от первых 8 символов).
+enum AvatarStyle: String, Codable, CaseIterable, Identifiable {
+    case blockies, jazzicon
+    var id: String { rawValue }
+}
+
 enum AvatarCell: Int, Codable, CaseIterable {
     case background = 0, color = 1, spot = 2, any = 3
 

@@ -261,6 +261,21 @@ enum L: String {
     case tierExceptional
     case tierLegendary
 
+    case rarityChecksumUpper
+    case rarityChecksumLower
+    case avatarFitTime
+
+    case avatarStyleBlockies
+    case avatarStyleJazzicon
+    case sectionJazziconGallery
+    case jazziconMore
+    case jazziconPick
+    case jazziconSelectedHint
+    case jazziconHint
+
+    case alphabetNoteBtc
+    case alphabetNoteBtc1
+
     func s(_ lang: AppLanguage) -> String {
         Self.table[self]?[lang] ?? rawValue
     }
@@ -431,7 +446,7 @@ enum L: String {
         .alphabetBase58: [.ru: "(в base58 нет 0, O, I и l)", .en: "(base58 has no 0, O, I or l)"],
         .alphabetTon: [.ru: "(только латиница, цифры, - и _)", .en: "(only Latin letters, digits, - and _)"],
         .useGPU: [.ru: "Считать на видеокарте", .en: "Use the GPU"],
-        .useGPUHintWallets: [.ru: "Metal: EVM и TRON (и для split-key) в 15–30 раз быстрее, «содержит» — в сотни. Solana и TON считаются на процессоре.", .en: "Metal: EVM and TRON (split-key too) 15–30× faster, \"contains\" hundreds of times. Solana and TON run on the CPU."],
+        .useGPUHintWallets: [.ru: "Metal: EVM, TRON и Bitcoin (и для split-key) в 15–30 раз быстрее, «содержит» — в сотни. Solana и TON считаются на процессоре.", .en: "Metal: EVM, TRON and Bitcoin (split-key too) 15–30× faster, \"contains\" hundreds of times. Solana and TON run on the CPU."],
         .useGPUHintContracts: [.ru: "Metal, в ~5 раз быстрее процессора. Выключите, если видеокарта нужна под другое.", .en: "Metal, about 5× faster than the CPU. Turn off if you need the GPU for something else."],
         .sectionKind: [.ru: "Способ развёртывания", .en: "Deployment method"],
         .unitAttemptsPerSec: [.ru: "попыток/с", .en: "tries/s"],
@@ -499,5 +514,17 @@ enum L: String {
         .tierVeryRare: [.ru: "очень редкий", .en: "very rare"],
         .tierExceptional: [.ru: "исключительный", .en: "exceptional"],
         .tierLegendary: [.ru: "легендарный", .en: "legendary"],
+        .rarityChecksumUpper: [.ru: "Checksum: все {n} букв заглавные", .en: "Checksum: all {n} letters uppercase"],
+        .rarityChecksumLower: [.ru: "Checksum: все {n} букв строчные", .en: "Checksum: all {n} letters lowercase"],
+        .avatarFitTime: [.ru: "Подобрать допуск под время", .en: "Fit tolerance to a time"],
+        .avatarStyleBlockies: [.ru: "Etherscan", .en: "Etherscan"],
+        .avatarStyleJazzicon: [.ru: "MetaMask", .en: "MetaMask"],
+        .sectionJazziconGallery: [.ru: "Выберите иконку", .en: "Pick an icon"],
+        .jazziconMore: [.ru: "Ещё", .en: "More"],
+        .jazziconPick: [.ru: "Выберите иконку из галереи", .en: "Pick an icon from the gallery"],
+        .jazziconSelectedHint: [.ru: "Иконку MetaMask задают первые 8 символов адреса — их и ищем", .en: "The MetaMask icon is set by the first 8 characters of the address — that's what we search for"],
+        .jazziconHint: [.ru: "MetaMask рисует иконку по первым 8 символам адреса. Выберите понравившуюся — видеокарта найдёт адрес с таким началом примерно за минуту.", .en: "MetaMask draws the icon from the first 8 characters of the address. Pick one you like — the GPU finds an address with that start in about a minute."],
+        .alphabetNoteBtc: [.ru: "bech32: только строчные, нет 1, b, i, o; адрес начинается с bc1q", .en: "bech32: lowercase only, no 1, b, i, o; address starts with bc1q"],
+        .alphabetNoteBtc1: [.ru: "base58: нет 0, O, I, l; адрес всегда начинается с 1", .en: "base58: no 0, O, I, l; address always starts with 1"],
     ]
 }

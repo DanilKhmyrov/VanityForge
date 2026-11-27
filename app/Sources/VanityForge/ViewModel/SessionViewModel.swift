@@ -86,6 +86,8 @@ final class SessionViewModel {
     }
     var splitKeyPublic: String = ""
     static let splitKeyNetworks: Set<String> = ["eth", "trx"]
+    /// Сети, которые умеет видеокарта (metalvanity-evm): всё на secp256k1.
+    static let gpuNetworks: Set<String> = ["eth", "trx", "btc", "btc1"]
 
     var splitKeyTrimmed: String { Create2Math.strip(splitKeyPublic) }
     var splitKeyValid: Bool {
@@ -119,6 +121,32 @@ final class SessionViewModel {
     var bycatchEnabled: Bool = true {
         didSet { if bycatchEnabled != oldValue { saveSettings() } }
     }
+    var avatarStyle: AvatarStyle = .blockies {
+        didSet { if avatarStyle != oldValue { saveSettings() } }
+    }
+    /// Выбранная иконка MetaMask — это и есть первые 8 hex-символов адреса.
+    var jazziconSeed: UInt32? {
+        didSet { if jazziconSeed != oldValue { saveSettings() } }
+    }
+    var jazziconGallery: [UInt32] = SessionViewModel.randomSeeds()
+    static let jazziconGallerySize = 30
+    static func randomSeeds() -> [UInt32] { (0..<jazziconGallerySize).map { _ in UInt32.random(in: .min ... .max) } }
+    func shuffleJazziconGallery() { jazziconGallery = Self.randomSeeds() }
+    var jazziconPrefix: String? { jazziconSeed.map { String(format: "%08x", $0) } }
+
+    /// Наименьший допуск по клеткам, при котором аватарка в среднем находится
+    /// не дольше `seconds` — рисунок остаётся как можно точнее.
+    func fitAvatarMisses(seconds: Double) {
+        let speed = assumedSpeed ?? 90_000_000
+        var target = avatarTarget
+        for misses in 0...AvatarTarget.maxMisses {
+            target.misses = misses
+            if let rarity = target.rarity, Double(rarity) / speed <= seconds { break }
+        }
+        avatarTarget = target
+    }
+    static let avatarFitTimes: [Double] = [10, 60, 600, 3600]
+
     /// Улов последнего поиска — отдельно от находок: не входит ни в счётчик, ни в редкость.
     var bycatchItems: [FoundEvent] = []
     static let maxDisplayedBycatch = 100
@@ -127,7 +155,8 @@ final class SessionViewModel {
         switch searchMode {
         case .contracts: return false
         case .avatar: return willUseGPU
-        case .wallets: return willUseGPU && !splitKeyEnabled
+        // Улов — про адреса EVM: при поиске только Bitcoin его нет (keccak замедлил бы GPU).
+        case .wallets: return willUseGPU && !splitKeyEnabled && !selectedNetworks.isDisjoint(with: ["eth", "trx"])
         }
     }
 
@@ -266,7 +295,7 @@ final class SessionViewModel {
     /// Пойдёт ли текущий поиск кошельков на видеокарту: GPU-движок знает EVM и TRON.
     var willUseGPU: Bool {
         if searchMode == .avatar { return useGPU }
-        return useGPU && !fakeMode && !selectedNetworks.isEmpty && selectedNetworks.isSubset(of: ["eth", "trx"])
+        return useGPU && !fakeMode && !selectedNetworks.isEmpty && selectedNetworks.isSubset(of: Self.gpuNetworks)
     }
 
     static var appVersion: String {
@@ -310,7 +339,11 @@ final class SessionViewModel {
     /// Редкость текущего условия (1 к N) — для шанса находки и оценок времени.
     var targetRarity: UInt64? {
         if searchMode == .contracts { return create2Rarity }
-        if searchMode == .avatar { return avatarTarget.rarity }
+        if searchMode == .avatar {
+            // Jazzicon — ровно 8 hex-символов в начале: 16^8.
+            if avatarStyle == .jazzicon { return jazziconSeed == nil ? nil : 1 << 32 }
+            return avatarTarget.rarity
+        }
         if isCustomPreset {
             return catalog.customPatternRarity(pattern: trimmedCustomPattern, mode: customPatternMode,
                                                networks: selectedNetworks, caseSensitive: customPatternCaseSensitive)
@@ -390,7 +423,7 @@ final class SessionViewModel {
             if create2Goal == .prefix { return create2PrefixValid }
             return true
         }
-        if searchMode == .avatar { return !avatarTarget.isEmpty }
+        if searchMode == .avatar { return avatarStyle == .jazzicon ? jazziconSeed != nil : !avatarTarget.isEmpty }
         guard !selectedNetworks.isEmpty else { return false }
         if splitKeyEnabled { guard splitKeyValid, splitKeyNetworksOK, !fakeMode else { return false } }
         if isCustomPreset { return !trimmedCustomPattern.isEmpty && customPatternPossible }
@@ -444,6 +477,8 @@ final class SessionViewModel {
         var lastMeasuredCreate3Speed: Double?
         var avatarTarget: AvatarTarget?
         var bycatchEnabled: Bool?
+        var avatarStyle: String?
+        var jazziconSeed: UInt32?
     }
 
     /// Настройки запоминаются между запусками приложения — чтобы не
@@ -486,7 +521,9 @@ final class SessionViewModel {
             lastMeasuredCreate2Speed: lastMeasuredCreate2Speed,
             lastMeasuredCreate3Speed: lastMeasuredCreate3Speed,
             avatarTarget: avatarTarget,
-            bycatchEnabled: bycatchEnabled
+            bycatchEnabled: bycatchEnabled,
+            avatarStyle: avatarStyle.rawValue,
+            jazziconSeed: jazziconSeed
         )
         guard let data = try? JSONEncoder().encode(settings) else { return }
         UserDefaults.standard.set(data, forKey: Self.settingsKey)
@@ -534,6 +571,9 @@ final class SessionViewModel {
         lastMeasuredCreate3Speed = settings.lastMeasuredCreate3Speed
         if let target = settings.avatarTarget, target.cells.count == AvatarTarget.cellCount { avatarTarget = target }
         bycatchEnabled = settings.bycatchEnabled ?? true
+        if let style = settings.avatarStyle.flatMap(AvatarStyle.init(rawValue:)) { avatarStyle = style }
+        jazziconSeed = settings.jazziconSeed
+        if let seed = jazziconSeed, !jazziconGallery.contains(seed) { jazziconGallery[0] = seed }
     }
 
     func start() {
@@ -563,6 +603,17 @@ final class SessionViewModel {
                 caller: create2CallerTrimmed, goal: create2Goal, minBytes: create2MinBytes,
                 prefix: Create2Math.strip(create2Prefix), hookFlags: create2HookFlags, useGPU: useGPU, gpuLoad: gpuLoad,
                 workerCount: workerCount, language: language
+            )
+            consume(stream)
+            return
+        }
+
+        if searchMode == .avatar, avatarStyle == .jazzicon, let prefix = jazziconPrefix {
+            // Иконка MetaMask = первые 8 символов адреса: обычный поиск по началу.
+            let stream = bridge.start(
+                networks: ["eth"], preset: "all", workerCount: workerCount,
+                customPattern: (prefix, .prefix, false), language: language,
+                useGPU: useGPU, gpuLoad: gpuLoad, bycatch: bycatchEnabled && bycatchAvailable
             )
             consume(stream)
             return

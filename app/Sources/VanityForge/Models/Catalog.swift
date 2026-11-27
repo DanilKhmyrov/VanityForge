@@ -12,6 +12,8 @@ enum NetworkVisual {
         "ton": [Color(red: 0.16, green: 0.64, blue: 0.98), Color(red: 0.42, green: 0.86, blue: 1.00)],
         "create2": [Color(red: 0.98, green: 0.72, blue: 0.22), Color(red: 0.96, green: 0.42, blue: 0.30)],
         "create3": [Color(red: 0.36, green: 0.86, blue: 0.62), Color(red: 0.18, green: 0.62, blue: 0.86)],
+        "btc": [Color(red: 0.97, green: 0.58, blue: 0.10), Color(red: 0.99, green: 0.78, blue: 0.30)],
+        "btc1": [Color(red: 0.93, green: 0.50, blue: 0.12), Color(red: 0.80, green: 0.62, blue: 0.30)],
         "avatar": [Color(red: 0.93, green: 0.36, blue: 0.72), Color(red: 0.55, green: 0.40, blue: 0.98)],
         "bycatch": [Color(red: 0.98, green: 0.80, blue: 0.25), Color(red: 0.95, green: 0.55, blue: 0.20)],
     ]
@@ -86,6 +88,9 @@ final class AppCatalog {
         "sol": base58,
         "trx": base58,
         "ton": Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"),
+        // bc1q… — bech32: только строчные, без 1, b, i, o (сам префикс bc1q тоже можно писать).
+        "btc": Set("qpzry9x8gf2tvdw0s3jn54khce6mua7l"),
+        "btc1": base58,
     ]
 
     /// «1 из N» для условия «слово в начале или в конце адреса» по выбранным
@@ -134,6 +139,12 @@ final class AppCatalog {
 
     func patternPossible(_ pattern: String, mode: CustomPatternMode, network: String, caseSensitive: Bool) -> Bool {
         guard var chars = Self.alphabetChars[network] else { return true }
+        // Bitcoin: «bc1q» в начале своего паттерна — часть адреса, а не символы для поиска;
+        // у 1… начало обязано быть «1».
+        if network == "btc", mode == .prefix, pattern.lowercased().hasPrefix("bc1q") {
+            return patternPossible(String(pattern.dropFirst(4)), mode: mode, network: network, caseSensitive: caseSensitive)
+        }
+        if network == "btc1", mode == .prefix, !pattern.hasPrefix("1") { return false }
         if network == "eth" { chars.formUnion("ABCDEF") }
         let ok = pattern.allSatisfy { c in
             chars.contains(c) || (!caseSensitive && chars.contains { $0.lowercased() == c.lowercased() })
@@ -195,6 +206,10 @@ final class AppCatalog {
             switch mode {
             case .prefix where net == "trx":
                 probability = Self.tronPrefixProbability(pattern, caseSensitive: caseSensitive)
+            case .prefix where net == "btc1":
+                probability = pow(alphabet, -(len - 1))  // ведущая «1» есть у всех
+            case .prefix where net == "btc" && pattern.lowercased().hasPrefix("bc1q"):
+                probability = pow(alphabet, -(len - 4))
             case .prefix, .suffix:
                 probability = pow(alphabet, -len)
             case .contains:

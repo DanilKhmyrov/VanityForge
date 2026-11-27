@@ -29,6 +29,7 @@ from multiprocessing import Queue, Value
 from typing import List, Optional, Tuple
 
 import avatar
+import btc
 import bycatch
 import create2
 import engines
@@ -416,6 +417,8 @@ def _pump_eth_engine(cmd: List[str], preset_key: str, result_queue: "mp.Queue", 
             if _engine_address(network, private_key, split_key) != address:
                 emit({"type": "error", "message": f"engine returned a wrong key for {address}", "fatal": False})
                 continue
+            if network in btc.NETWORKS and not split_key:
+                private_key = btc.wif(bytes.fromhex(private_key))
             if payload.get("bycatch"):
                 info = bycatch.classify(address)
                 if info:
@@ -488,11 +491,14 @@ def _case_variants(pattern: str, chars: set) -> Optional[List[str]]:
     return variants
 
 
-def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]]) -> Optional[List[str]]:
+def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]],
+                 lead: str = "T") -> Optional[List[str]]:
     """Цели для GPU-движка на TRON: "начало:конец" в base58. Адрес TRON всегда
     начинается с T (и предикаты смотрят на строку целиком, с T), конец на GPU —
     до 10 символов, «*abc» — подстрока где угодно, «?abc» — она же без учёта
-    регистра. None — условие так не выразить, TRON ищется на CPU."""
+    регистра. None — условие так не выразить, TRON ищется на CPU.
+    lead="1" — то же для Bitcoin 1… (Base58Check с версией 0x00): там пресеты
+    смотрят на адрес после ведущей «1» (patterns.PRESETS_BTC_LEGACY)."""
     chars = ALPHABET_CHARS["trx"]
     valid = lambda s: bool(s) and all(c in chars for c in s)
     if preset_key == CUSTOM_KEY:
@@ -511,7 +517,7 @@ def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]
             return None
         variants = [v for v in variants if valid(v)]
         if mode == "prefix":
-            targets = [f"{v}:" for v in variants if v.startswith("T") and len(v) <= 34]
+            targets = [f"{v}:" for v in variants if v.startswith(lead) and len(v) <= 34]
         elif mode == "contains":
             targets = [f"*{v}" for v in variants if len(v) <= 34]
         else:
@@ -524,11 +530,52 @@ def tron_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]
     if preset_key in ("word", "all") and any(len(w) > 10 for w in words):
         return None
     alphabet = "".join(sorted(chars))
+    if lead == "1":
+        by_preset = {
+            "prefix10": [f"1{c * 10}:" for c in alphabet],
+            "suffix10": [f":{c * 10}" for c in alphabet],
+            "word": [f"1{w}:" for w in words if len(w) <= 33] + [f":{w}" for w in words],
+            "deadprefixsuffix": ["1dead:dead"],
+        }
+    else:
+        by_preset = {
+            "prefix10": ["TTTTTTTTTT:"],
+            "suffix10": [f":{c * 10}" for c in alphabet],
+            "word": [f"{w}:" for w in words if w.startswith("T")] + [f":{w}" for w in words],
+            "deadprefixsuffix": [],  # адрес TRON начинается с T — «dead» в начале невозможен
+        }
+    if preset_key == "all":
+        targets = sorted({t for group in by_preset.values() for t in group})
+    else:
+        targets = by_preset.get(preset_key) or []
+    return targets if 0 < len(targets) <= MAX_ENGINE_TARGETS else None
+
+
+def bech32_targets(preset_key: str, custom_pattern: Optional[Tuple[str, str, bool]]) -> Optional[List[str]]:
+    """Цели для GPU на Bitcoin bc1q…: символы после «bc1q» (bech32, только
+    строчные) — "abc:" начало (до 32), ":xyz" конец, "*abc" где угодно (до 38).
+    Цели — надмножество, точное условие проверяет предикат."""
+    chars = set(btc.BECH32_CHARS)
+    valid = lambda s: bool(s) and all(c in chars for c in s)
+    if preset_key == CUSTOM_KEY:
+        if not custom_pattern:
+            return None
+        pattern, mode, _ = custom_pattern
+        pattern = pattern.lower().removeprefix("bc1q")
+        if not valid(pattern):
+            return None
+        if mode == "prefix":
+            return [f"{pattern}:"] if len(pattern) <= 32 else None
+        if mode == "suffix":
+            return [f":{pattern}"] if len(pattern) <= 38 else None
+        return [f"*{pattern}"] if len(pattern) <= 38 else None
+
+    words = sorted({w.lower() for w in patterns.SEARCH_WORDS if valid(w.lower())})
     by_preset = {
-        "prefix10": ["TTTTTTTTTT:"],
-        "suffix10": [f":{c * 10}" for c in alphabet],
-        "word": [f"{w}:" for w in words if w.startswith("T")] + [f":{w}" for w in words],
-        "deadprefixsuffix": [],  # адрес TRON начинается с T — «dead» в начале невозможен
+        "prefix10": [f"{c * 10}:" for c in btc.BECH32_CHARS],
+        "suffix10": [f":{c * 10}" for c in btc.BECH32_CHARS],
+        "word": [f"{w}:" for w in words if len(w) <= 32] + [f":{w}" for w in words if len(w) <= 38],
+        "deadprefixsuffix": ["dead:"],
     }
     if preset_key == "all":
         targets = sorted({t for group in by_preset.values() for t in group})
@@ -553,11 +600,17 @@ def gpu_limit_args(args: List[str]) -> Tuple[str, ...]:
 def metal_eth_worker(binary_path: str, eth_targets: Optional[List[str]], trx_targets: Optional[List[str]],
                      preset_key: str, result_queue: "mp.Queue", stats_counter, stop_event,
                      gpu_limits: Tuple[str, ...] = (), split_key: Optional[str] = None,
-                     avatar_spec: Optional[str] = None, with_bycatch: bool = False) -> None:
+                     avatar_spec: Optional[str] = None, with_bycatch: bool = False,
+                     btc1_targets: Optional[List[str]] = None, btc_targets: Optional[List[str]] = None) -> None:
     """GPU-движок проверяет ETH и TRON на одних и тех же кандидатах: у обеих
-    сетей из одного ключа одинаковые 20 байт адреса. Там же — аватарка и
-    побочный улов (его находки приходят с пометкой bycatch)."""
+    сетей из одного ключа одинаковые 20 байт адреса. Там же — аватарка,
+    побочный улов (его находки приходят с пометкой bycatch) и Bitcoin
+    (hash160 сжатого ключа: 1… и bc1q…)."""
     cmd = [binary_path] + list(gpu_limits)
+    for target in btc1_targets or []:
+        cmd += ["--btc-target", target]
+    for target in btc_targets or []:
+        cmd += ["--bech32-target", target]
     if split_key:
         cmd += ["--split-key", split_key]
     if avatar_spec:
@@ -665,18 +718,28 @@ def generate_vanity_json(networks: List[str], preset_key: str,
     gpu_path: Optional[str] = None
     gpu_eth_targets: Optional[List[str]] = None
     gpu_trx_targets: Optional[List[str]] = None
+    gpu_btc_targets: Optional[List[str]] = None   # bc1q…
+    gpu_btc1_targets: Optional[List[str]] = None  # 1…
     if not fake_found_interval and engine_pref != "cpu":
         if "eth" in networks:
             gpu_eth_targets = eth_hex_targets(preset_key, custom_pattern, allow_contains=True)
         if "trx" in networks:
             gpu_trx_targets = tron_targets(preset_key, custom_pattern)
-        if gpu_eth_targets or gpu_trx_targets or avatar_spec:
+        if "btc" in networks:
+            gpu_btc_targets = bech32_targets(preset_key, custom_pattern)
+        if "btc1" in networks:
+            gpu_btc1_targets = tron_targets(preset_key, custom_pattern, lead="1")
+        if gpu_eth_targets or gpu_trx_targets or gpu_btc_targets or gpu_btc1_targets or avatar_spec:
             gpu_path = find_gpu_eth()
         if not gpu_path:
-            gpu_eth_targets = gpu_trx_targets = None
-    gpu_nets = [n for n, t in (("eth", gpu_eth_targets), ("trx", gpu_trx_targets)) if t]
+            gpu_eth_targets = gpu_trx_targets = gpu_btc_targets = gpu_btc1_targets = None
+    gpu_nets = [n for n, t in (("eth", gpu_eth_targets), ("trx", gpu_trx_targets),
+                               ("btc", gpu_btc_targets), ("btc1", gpu_btc1_targets)) if t]
     if avatar_spec and gpu_path:
         gpu_nets = ["eth"]
+    # Улов — про адреса EVM: при поиске только Bitcoin он заставил бы GPU
+    # считать ещё и keccak, а это −30% скорости.
+    with_bycatch = with_bycatch and bool({"eth", "trx"} & set(gpu_nets))
 
     # ETH без GPU: ethvanity (Rust, CPU) — по тем же целям «начало:конец», что и GPU.
     eth_tool_path: Optional[str] = None
@@ -722,7 +785,7 @@ def generate_vanity_json(networks: List[str], preset_key: str,
         if gpu_nets:
             t = threading.Thread(target=metal_eth_worker, daemon=True, args=(
                 gpu_path, gpu_eth_targets, gpu_trx_targets, preset_key, result_queue, stats_counter,
-                stop_event, gpu_limits, split_key, avatar_spec, with_bycatch))
+                stop_event, gpu_limits, split_key, avatar_spec, with_bycatch, gpu_btc1_targets, gpu_btc_targets))
             t.start()
             procs.append(t)
             effective_workers += 1
@@ -872,8 +935,8 @@ def generate_vanity_json(networks: List[str], preset_key: str,
 # для собственного паттерна пользователя.
 # ============================================================================
 
-ALPHABET_SIZES = {"sol": 58, "eth": 16, "trx": 58, "ton": 64}
-BODY_LENGTHS = {"sol": 44, "eth": 40, "trx": 34, "ton": 46}
+ALPHABET_SIZES = {"sol": 58, "eth": 16, "trx": 58, "ton": 64, "btc": 32, "btc1": 58}
+BODY_LENGTHS = {"sol": 44, "eth": 40, "trx": 34, "ton": 46, "btc": 38, "btc1": 33}
 _BASE58 = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
 # Символы, которые вообще встречаются в адресе сети (ETH сравнивается в нижнем
 # регистре): слово с другими символами никогда не совпадёт и в оценку не идёт.
@@ -882,6 +945,8 @@ ALPHABET_CHARS = {
     "sol": _BASE58,
     "trx": _BASE58,
     "ton": set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"),
+    "btc": set("qpzry9x8gf2tvdw0s3jn54khce6mua7l"),
+    "btc1": _BASE58,
 }
 
 

@@ -21,5 +21,7 @@ enum NetworkAlphabet {
         "sol": NetworkAlphabetInfo(chars: "1-9, A-H, J-N, P-Z, a-k, m-z", noteKey: .alphabetNoteSol),
         "trx": NetworkAlphabetInfo(chars: "1-9, A-H, J-N, P-Z, a-k, m-z", noteKey: .alphabetNoteTrx),
         "ton": NetworkAlphabetInfo(chars: "A-Z, a-z, 0-9, -, _", noteKey: .alphabetNoteTon),
+        "btc": NetworkAlphabetInfo(chars: "qpzry9x8gf2tvdw0s3jn54khce6mua7l", noteKey: .alphabetNoteBtc),
+        "btc1": NetworkAlphabetInfo(chars: "1-9, A-H, J-N, P-Z, a-k, m-z", noteKey: .alphabetNoteBtc1),
     ]
 }

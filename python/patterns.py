@@ -5,9 +5,11 @@ import re
 
 
 def _body(addr: str) -> str:
-    """Возвращает адрес без известных префиксов (0x, EQ, UQ)."""
+    """Возвращает адрес без известных префиксов (0x, EQ, UQ, bc1q)."""
     if addr.startswith("0x"):
         return addr[2:]
+    if addr.startswith("bc1q"):
+        return addr[4:]
     if addr.startswith(("EQ", "UQ")) and len(addr) > 2:
         return addr[2:]
     return addr
@@ -261,11 +263,21 @@ PRESET_DESC_EN = {
     "repeat2x4": "Repeating 2x4 pattern",
 }
 
+# Bitcoin 1… — те же условия, но после ведущей «1» (она есть у каждого адреса,
+# а «11…» — это нулевые байты hash160, почти невозможные). Отдельный словарь:
+# снимать «1» в _body нельзя, адреса Solana тоже бывают на 1.
+PRESETS_BTC_LEGACY = {
+    key: (desc, (lambda pred: (lambda a: pred(a[1:]) if a.startswith("1") else False))(pred))
+    for key, (desc, pred) in PRESETS_STANDARD.items()
+}
+
 NETWORK_PRESETS = {
     "sol": PRESETS_STANDARD,
     "eth": PRESETS_STANDARD,
     "trx": PRESETS_STANDARD,
     "ton": PRESETS_TON,
+    "btc": PRESETS_STANDARD,
+    "btc1": PRESETS_BTC_LEGACY,
 }
 
 PRESETS = PRESETS_STANDARD

@@ -1,4 +1,4 @@
-// Перебор EVM-адресов на GPU: secp256k1 + keccak.
+// Перебор адресов на GPU: secp256k1 + keccak (EVM, TRON) и hash160 (Bitcoin).
 //
 // У каждого потока своя точка Q (аффинная, в `points`) — центр окна. За один
 // запуск поток проверяет 2B+1 точек: Q и Q ± j·G (j = 1..B, таблица j·G — в
@@ -12,7 +12,8 @@
 // cfg: [0] threads, [1] B, [2] capacity, [3] число шаблонов K, дальше K шаблонов
 //      по 10 слов: значение (5) и маска (5) — адрес подходит, если совпал с любым.
 // out: по 8 uint на совпадение — поток, смещение в окне (0..2B, центр = B), адрес (5 слов),
-//      что совпало: 0 — EVM, 1 — TRON, 2 — побочный улов, 3 — аватарка.
+//      что совпало: 0 — EVM, 1 — TRON, 2 — побочный улов, 3 — аватарка,
+//      4 — Bitcoin 1…, 5 — Bitcoin bc1q… (у Bitcoin вместо адреса — hash160).
 
 #include <metal_stdlib>
 using namespace metal;
@@ -462,49 +463,119 @@ static inline bool avatar_hit(thread const uint *a, constant uint *av) {
 // Начало base58 — это диапазон чисел, проверка без контрольной суммы. Конец —
 // остаток числа (адрес ++ checksum) по модулю 58^k = 2^k · 29^k. «Содержит» на
 // TRON требует всей base58-строки: sha256d и 7 делений 200-битного числа.
-static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint offset,
-                         constant uint *cfg, device atomic_uint *hits, device uint *out) {
-    uint a[5];
-    eth_address(x, y, a);
-    bool eth_hit = false;
-    for (uint k = 0; k < cfg[3] && !eth_hit; k++) {
-        constant uint *pat = cfg + 4 + k * 10;
-        eth_hit = (a[0] & pat[5]) == pat[0] && (a[1] & pat[6]) == pat[1] && (a[2] & pat[7]) == pat[2]
-               && (a[3] & pat[8]) == pat[3] && (a[4] & pat[9]) == pat[4];
+// ---- Bitcoin: hash160 = RIPEMD-160(SHA-256(сжатый ключ)) ----
+
+constant uchar RMD_R[80] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
+    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13 };
+constant uchar RMD_RP[80] = {
+    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
+    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
+    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11 };
+constant uchar RMD_S[80] = {
+    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
+    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
+    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6 };
+constant uchar RMD_SP[80] = {
+    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
+    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
+    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11 };
+constant uint RMD_K[5] = { 0x00000000u, 0x5A827999u, 0x6ED9EBA1u, 0x8F1BBCDCu, 0xA953FD4Eu };
+constant uint RMD_KP[5] = { 0x50A28BE6u, 0x5C4DD124u, 0x6D703EF3u, 0x7A6D76E9u, 0x00000000u };
+
+static inline uint rol32(uint x, uint n) { return (x << n) | (x >> (32 - n)); }
+
+static inline uint rmd_f(int j, uint x, uint y, uint z) {
+    if (j < 16) return x ^ y ^ z;
+    if (j < 32) return (x & y) | (~x & z);
+    if (j < 48) return (x | ~y) ^ z;
+    if (j < 64) return (x & z) | (y & ~z);
+    return x ^ (y | ~z);
+}
+
+// RIPEMD-160 одного блока (сообщение уже дополнено), слова little-endian.
+static inline void ripemd160_block(thread const uint *X, thread uint *h) {
+    uint h0 = 0x67452301u, h1 = 0xEFCDAB89u, h2 = 0x98BADCFEu, h3 = 0x10325476u, h4 = 0xC3D2E1F0u;
+    uint a = h0, b = h1, c = h2, d = h3, e = h4;
+    uint ap = h0, bp = h1, cp = h2, dp = h3, ep = h4;
+    for (int j = 0; j < 80; j++) {
+        uint t = rol32(a + rmd_f(j, b, c, d) + X[RMD_R[j]] + RMD_K[j >> 4], RMD_S[j]) + e;
+        a = e; e = d; d = rol32(c, 10); c = b; b = t;
+        t = rol32(ap + rmd_f(79 - j, bp, cp, dp) + X[RMD_RP[j]] + RMD_KP[j >> 4], RMD_SP[j]) + ep;
+        ap = ep; ep = dp; dp = rol32(cp, 10); cp = bp; bp = t;
     }
+    uint t = h1 + c + dp;
+    h[1] = h2 + d + ep; h[2] = h3 + e + ap; h[3] = h4 + a + bp; h[4] = h0 + b + cp; h[0] = t;
+}
 
-    constant uint *tron = cfg + 4 + cfg[3] * 10;
-    uint ntron = tron[0];
-    constant uint *eth_contains = tron + 1 + ntron * 20;
-    uint nec = eth_contains[0];
-    constant uint *tron_contains = eth_contains + 1 + nec * 11;
-    uint ntc = tron_contains[0];
+// hash160 сжатого ключа (02/03 ++ x) — 5 слов big-endian.
+static inline void btc_hash160(thread const Fe &x, thread const Fe &y, thread uint *H) {
+    uint w[16];
+    uint prefix = 2u + (y.v[0] & 1u);
+    w[0] = (prefix << 24) | (x.v[7] >> 8);
+    for (int i = 1; i < 8; i++) w[i] = (x.v[8 - i] << 24) | (x.v[7 - i] >> 8);
+    w[8] = (x.v[0] << 24) | 0x800000u;
+    for (int i = 9; i < 15; i++) w[i] = 0;
+    w[15] = 33 * 8;
+    uint sh[8];
+    sha256_block(w, sh);
+    uint X[16];
+    for (int i = 0; i < 8; i++) X[i] = bswap(sh[i]);
+    X[8] = 0x80u;
+    for (int i = 9; i < 16; i++) X[i] = 0;
+    X[14] = 32 * 8;
+    uint r[5];
+    ripemd160_block(X, r);
+    for (int i = 0; i < 5; i++) H[i] = bswap(r[i]);
+}
 
-    for (uint k = 0; k < nec && !eth_hit; k++) {
-        constant uint *pt = eth_contains + 1 + k * 11;
-        int len = int(pt[0]);
-        for (int pos = 0; pos + len <= 40 && !eth_hit; pos++) {
-            bool same = true;
-            for (int j = 0; j < len && same; j++)
-                same = nibble_at(a, pos + j) == ((pt[1 + (j >> 2)] >> (8 * (j & 3))) & 0xffu);
-            eth_hit = same;
-        }
+// bech32 (BIP-173) адреса bc1q… — 38 символов после «bc1q»: 32 символа данных
+// (hash160 по 5 бит) и 6 символов контрольной суммы (только если нужны).
+constant uint BECH32_GEN[5] = { 0x3b6a57b2u, 0x26508e6du, 0x1ea119fau, 0x3d4233ddu, 0x2a1462b3u };
+
+static inline uint bech32_step(uint chk, uint v) {
+    uint top = chk >> 25;
+    chk = ((chk & 0x1ffffffu) << 5) ^ v;
+    for (int i = 0; i < 5; i++) if ((top >> i) & 1u) chk ^= BECH32_GEN[i];
+    return chk;
+}
+
+static inline void bech32_symbols(thread const uint *H, bool with_checksum, thread uchar *sym) {
+    for (int k = 0; k < 32; k++) {
+        int pos = 5 * k, w = pos >> 5, sh = pos & 31;
+        uint val = H[w] << sh;
+        if (sh > 27) val |= H[w + 1] >> (32 - sh);
+        sym[k] = uchar(val >> 27);
     }
-    if (eth_hit) record(t, offset, a, 0, cfg, hits, out);
+    if (!with_checksum) return;
+    // hrp «bc» → [3, 3, 0, 2, 3], затем версия 0, данные и шесть нулей.
+    uint chk = 1u;
+    chk = bech32_step(chk, 3); chk = bech32_step(chk, 3); chk = bech32_step(chk, 0);
+    chk = bech32_step(chk, 2); chk = bech32_step(chk, 3); chk = bech32_step(chk, 0);
+    for (int k = 0; k < 32; k++) chk = bech32_step(chk, sym[k]);
+    for (int k = 0; k < 6; k++) chk = bech32_step(chk, 0);
+    chk ^= 1u;
+    for (int k = 0; k < 6; k++) sym[32 + k] = uchar((chk >> (5 * (5 - k))) & 31u);
+}
 
-    // За «содержит» TRON — улов и аватарка (раскладка — у bycatch_hit и avatar_hit).
-    constant uint *bycatch = tron_contains + 1 + ntc * 10;
-    constant uint *avatar = bycatch + 2 + bycatch[1] + 1 + bycatch[2 + bycatch[1]];
-    if (!eth_hit && (bycatch[0] | bycatch[1] | bycatch[2 + bycatch[1]]) != 0 && bycatch_hit(a, bycatch))
-        record(t, offset, a, 2, cfg, hits, out);
-    if (avatar[0] != 0 && avatar_hit(a, avatar)) record(t, offset, a, 3, cfg, hits, out);
-
-    if (ntron == 0 && ntc == 0) return;
-    uint v[6] = { 0x41u, bswap(a[0]), bswap(a[1]), bswap(a[2]), bswap(a[3]), bswap(a[4]) };
+// Base58Check (TRON, Bitcoin 1…): v — версия ++ 20 байт как 6 слов big-endian.
+// targets: [n] и по 20 слов (начало — диапазон, конец — остатки, см. выше),
+// contains: [m] и по 10 слов.
+static inline bool base58check_hit(thread const uint *v, constant uint *targets, constant uint *contains) {
+    uint ntargets = targets[0], ncontains = contains[0];
     bool have_chk = false;
     uint chk = 0;
-    for (uint k = 0; k < ntron; k++) {
-        constant uint *tt = tron + 1 + k * 20;
+    for (uint k = 0; k < ntargets; k++) {
+        constant uint *tt = targets + 1 + k * 20;
         if ((tt[0] & 1u) && (cmp6(v, tt + 2) < 0 || cmp6(v, tt + 8) > 0)) continue;
         if (tt[0] & 2u) {
             if (!have_chk) { chk = tron_checksum(v); have_chk = true; }
@@ -514,31 +585,107 @@ static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint of
             ulong r = 0;
             for (int i = 0; i < 6; i++) {
                 uint word = v[i];
-                int first = i == 0 ? 3 : 0;   // v[0] — один байт 0x41
+                int first = i == 0 ? 3 : 0;   // v[0] — один байт версии
                 for (int b = first; b < 4; b++) r = (r * 256 + ((word >> (24 - 8 * b)) & 0xffu)) % m;
             }
             for (int b = 0; b < 4; b++) r = (r * 256 + ((chk >> (24 - 8 * b)) & 0xffu)) % m;
             if (r != (ulong(tt[15]) | (ulong(tt[16]) << 32))) continue;
         }
-        record(t, offset, a, 1, cfg, hits, out);
-        return;
+        return true;
     }
-
-    if (ntc == 0) return;
+    if (ncontains == 0) return false;
     if (!have_chk) chk = tron_checksum(v);
     uchar digits[34];
     tron_digits(v, chk, digits);
     uchar folded[34];
     for (int i = 0; i < 34; i++) folded[i] = B58_FOLD[digits[i]];
-    for (uint k = 0; k < ntc; k++) {
-        constant uint *pt = tron_contains + 1 + k * 10;
+    for (uint k = 0; k < ncontains; k++) {
+        constant uint *pt = contains + 1 + k * 10;
         int len = int(pt[0] & 0xffffu);
         bool fold = (pt[0] >> 16) != 0;
         for (int pos = 0; pos + len <= 34; pos++) {
             bool same = true;
             for (int j = 0; j < len && same; j++)
                 same = (fold ? folded[pos + j] : digits[pos + j]) == ((pt[1 + (j >> 2)] >> (8 * (j & 3))) & 0xffu);
-            if (same) { record(t, offset, a, 1, cfg, hits, out); return; }
+            if (same) return true;
+        }
+    }
+    return false;
+}
+
+static inline void check(thread const Fe &x, thread const Fe &y, uint t, uint offset,
+                         constant uint *cfg, device atomic_uint *hits, device uint *out) {
+    constant uint *tron = cfg + 4 + cfg[3] * 10;
+    uint ntron = tron[0];
+    constant uint *eth_contains = tron + 1 + ntron * 20;
+    uint nec = eth_contains[0];
+    constant uint *tron_contains = eth_contains + 1 + nec * 11;
+    uint ntc = tron_contains[0];
+    // За «содержит» TRON — улов, аватарка (раскладка — у bycatch_hit и avatar_hit) и Bitcoin.
+    constant uint *bycatch = tron_contains + 1 + ntc * 10;
+    constant uint *avatar = bycatch + 2 + bycatch[1] + 1 + bycatch[2 + bycatch[1]];
+    // Bitcoin: [n] целей 1… по 20 слов, [m] «содержит» 1… по 10, [k] целей bc1q… по 11:
+    // [0] режим (0 начало, 1 конец, 2 где угодно) | длина << 8, дальше символы по байту.
+    constant uint *btc_legacy = avatar + 16;
+    constant uint *btc_legacy_contains = btc_legacy + 1 + btc_legacy[0] * 20;
+    constant uint *bech = btc_legacy_contains + 1 + btc_legacy_contains[0] * 10;
+    bool bycatch_on = (bycatch[0] | bycatch[1] | bycatch[2 + bycatch[1]]) != 0;
+    bool need_eth = cfg[3] != 0 || ntron != 0 || nec != 0 || ntc != 0 || bycatch_on || avatar[0] != 0;
+
+    if (need_eth) {
+        uint a[5];
+        eth_address(x, y, a);
+        bool eth_hit = false;
+        for (uint k = 0; k < cfg[3] && !eth_hit; k++) {
+            constant uint *pat = cfg + 4 + k * 10;
+            eth_hit = (a[0] & pat[5]) == pat[0] && (a[1] & pat[6]) == pat[1] && (a[2] & pat[7]) == pat[2]
+                   && (a[3] & pat[8]) == pat[3] && (a[4] & pat[9]) == pat[4];
+        }
+        for (uint k = 0; k < nec && !eth_hit; k++) {
+            constant uint *pt = eth_contains + 1 + k * 11;
+            int len = int(pt[0]);
+            for (int pos = 0; pos + len <= 40 && !eth_hit; pos++) {
+                bool same = true;
+                for (int j = 0; j < len && same; j++)
+                    same = nibble_at(a, pos + j) == ((pt[1 + (j >> 2)] >> (8 * (j & 3))) & 0xffu);
+                eth_hit = same;
+            }
+        }
+        if (eth_hit) record(t, offset, a, 0, cfg, hits, out);
+        if (!eth_hit && bycatch_on && bycatch_hit(a, bycatch)) record(t, offset, a, 2, cfg, hits, out);
+        if (avatar[0] != 0 && avatar_hit(a, avatar)) record(t, offset, a, 3, cfg, hits, out);
+        if (ntron != 0 || ntc != 0) {
+            uint v[6] = { 0x41u, bswap(a[0]), bswap(a[1]), bswap(a[2]), bswap(a[3]), bswap(a[4]) };
+            if (base58check_hit(v, tron, tron_contains)) record(t, offset, a, 1, cfg, hits, out);
+        }
+    }
+
+    uint nbech = bech[0];
+    if (btc_legacy[0] == 0 && btc_legacy_contains[0] == 0 && nbech == 0) return;
+    uint H[5];
+    btc_hash160(x, y, H);
+    // В out — hash160 той же упаковкой, что и адрес EVM (байты little-endian в словах).
+    uint packed[5] = { bswap(H[0]), bswap(H[1]), bswap(H[2]), bswap(H[3]), bswap(H[4]) };
+    if (btc_legacy[0] != 0 || btc_legacy_contains[0] != 0) {
+        uint v[6] = { 0u, H[0], H[1], H[2], H[3], H[4] };
+        if (base58check_hit(v, btc_legacy, btc_legacy_contains)) record(t, offset, packed, 4, cfg, hits, out);
+    }
+    if (nbech == 0) return;
+    bool need_checksum = false;
+    for (uint k = 0; k < nbech; k++) need_checksum |= (bech[1 + k * 11] & 0xffu) != 0;
+    uchar sym[38];
+    bech32_symbols(H, need_checksum, sym);
+    for (uint k = 0; k < nbech; k++) {
+        constant uint *pt = bech + 1 + k * 11;
+        uint mode = pt[0] & 0xffu;
+        int len = int(pt[0] >> 8);
+        int first = mode == 1 ? 38 - len : 0;
+        int last = mode == 2 ? 38 - len : first;
+        for (int pos = first; pos <= last; pos++) {
+            bool same = true;
+            for (int j = 0; j < len && same; j++)
+                same = sym[pos + j] == ((pt[1 + (j >> 2)] >> (8 * (j & 3))) & 0xffu);
+            if (same) { record(t, offset, packed, 5, cfg, hits, out); return; }
         }
     }
 }

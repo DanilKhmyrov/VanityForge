@@ -163,9 +163,37 @@ class TronGenerator:
         return "Tron"
 
 
+class BtcSegwitGenerator:
+    """Bitcoin SegWit (bc1q…), ключ — WIF. См. btc.py."""
+
+    @staticmethod
+    def generate() -> Tuple[str, str]:
+        import btc
+        return btc.generate("btc")
+
+    @staticmethod
+    def name() -> str:
+        return "Bitcoin (bc1q…)"
+
+
+class BtcLegacyGenerator:
+    """Bitcoin Legacy (1…), ключ — WIF. См. btc.py."""
+
+    @staticmethod
+    def generate() -> Tuple[str, str]:
+        import btc
+        return btc.generate("btc1")
+
+    @staticmethod
+    def name() -> str:
+        return "Bitcoin (1…)"
+
+
 NETWORKS = {
     "sol": SolanaGenerator,
     "ton": TonGenerator,
     "eth": EthGenerator,
     "trx": TronGenerator,
+    "btc": BtcSegwitGenerator,
+    "btc1": BtcLegacyGenerator,
 }

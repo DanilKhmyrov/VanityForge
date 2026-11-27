@@ -7,6 +7,19 @@ struct AvatarForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            AvatarStylePicker()
+            if session.avatarStyle == .jazzicon {
+                JazziconGallery()
+                rarityCard
+            } else {
+                blockiesForm
+            }
+        }
+        .disabled(session.isRunning)
+    }
+
+    private var blockiesForm: some View {
+        VStack(alignment: .leading, spacing: 20) {
             section(session.t(.sectionAvatarDrawing)) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .top, spacing: 12) {
@@ -34,6 +47,7 @@ struct AvatarForm: View {
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                     missesStepper
+                    fitTimeRow
                 }
             }
 
@@ -47,7 +61,6 @@ struct AvatarForm: View {
 
             rarityCard
         }
-        .disabled(session.isRunning)
     }
 
     private func binding(_ key: WritableKeyPath<AvatarTarget, AvatarSwatch>) -> Binding<AvatarSwatch> {
@@ -78,10 +91,30 @@ struct AvatarForm: View {
         }
     }
 
+    /// «Хочу найти за минуту» — подбирает наименьший допуск под это время.
+    private var fitTimeRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(session.t(.avatarFitTime)).font(.system(size: 10.5)).foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                ForEach(SessionViewModel.avatarFitTimes, id: \.self) { seconds in
+                    Button { session.fitAvatarMisses(seconds: seconds) } label: {
+                        Text("≤ " + Format.duration(seconds: seconds, session.language))
+                            .font(.system(size: 10.5, weight: .medium))
+                            .lineLimit(1)
+                            .padding(.vertical, 4)
+                            .frame(maxWidth: .infinity)
+                            .background(Capsule().fill(Color.white.opacity(0.05)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var rarityCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let rarity = session.avatarTarget.rarity {
+            if let rarity = session.targetRarity {
                 HStack {
                     Text(session.t(.rarityApprox))
                         .font(.system(size: 11))
@@ -99,14 +132,14 @@ struct AvatarForm: View {
                             .font(.system(size: 12, weight: .semibold).monospacedDigit())
                     }
                 }
-                if session.avatarTarget.cells.contains(.spot) {
+                if session.avatarStyle == .blockies, session.avatarTarget.cells.contains(.spot) {
                     Text(session.t(.avatarSpotsNote))
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text(session.t(.avatarEmpty))
+                Text(session.t(session.avatarStyle == .jazzicon ? .jazziconPick : .avatarEmpty))
                     .font(.system(size: 11))
                     .foregroundStyle(.orange)
             }
@@ -234,6 +267,95 @@ private struct SwatchRow: View {
                     .help(session.t(swatch.label))
                 }
             }
+        }
+    }
+}
+
+/// Etherscan (blockies) или MetaMask (jazzicon).
+private struct AvatarStylePicker: View {
+    @Environment(SessionViewModel.self) private var session
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(AvatarStyle.allCases) { style in
+                Button { session.avatarStyle = style } label: {
+                    VStack(spacing: 4) {
+                        Group {
+                            if style == .blockies {
+                                BlockieView(address: "0x5ca1ab1e00000000000000000000000000c0ffee", size: 26)
+                            } else {
+                                JazziconView(seed: session.jazziconSeed ?? 0x5ca1ab1e, size: 26)
+                            }
+                        }
+                        Text(session.t(style == .blockies ? .avatarStyleBlockies : .avatarStyleJazzicon))
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text(style == .blockies ? "blockies" : "jazzicon")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(session.avatarStyle == style ? 0.10 : 0.03))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.white.opacity(session.avatarStyle == style ? 0.35 : 0.07), lineWidth: 1))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+/// Галерея иконок MetaMask: каждая — это первые 8 символов адреса. Выбрали —
+/// видеокарта ищет адрес с таким началом (16^8 попыток).
+private struct JazziconGallery: View {
+    @Environment(SessionViewModel.self) private var session
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 5)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(session.t(.sectionJazziconGallery).uppercased())
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .tracking(0.6)
+                Spacer()
+                Button { withAnimation(.easeOut(duration: 0.2)) { session.shuffleJazziconGallery() } } label: {
+                    Label(session.t(.jazziconMore), systemImage: "shuffle")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            if let seed = session.jazziconSeed {
+                HStack(spacing: 12) {
+                    JazziconView(seed: seed, size: 56)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("0x" + String(format: "%08x", seed) + "…")
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        Text(session.t(.jazziconSelectedHint))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(session.jazziconGallery, id: \.self) { seed in
+                    Button { session.jazziconSeed = seed } label: {
+                        JazziconView(seed: seed, size: 38)
+                            .overlay(Circle().strokeBorder(Color.white.opacity(session.jazziconSeed == seed ? 0.95 : 0), lineWidth: 2.5))
+                            .padding(2)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text(session.t(.jazziconHint))
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

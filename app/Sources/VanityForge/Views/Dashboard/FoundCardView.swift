@@ -22,6 +22,11 @@ struct FoundCardView: View {
     private var accent: Color { NetworkVisual.accent(for: event.isBycatch ? "bycatch" : event.network) }
     private var balances: [String: Double]? { session.balancesBySeq[event.seq] }
     private var fileURL: URL { ResultsLocation.resolve(event.filepath) }
+    /// Найдено по выбранной иконке MetaMask (её 8 символов — начало адреса).
+    private var isJazziconFind: Bool {
+        guard session.searchMode == .avatar, session.avatarStyle == .jazzicon, let prefix = session.jazziconPrefix else { return false }
+        return event.address.lowercased().hasPrefix("0x" + prefix)
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -117,9 +122,10 @@ struct FoundCardView: View {
     private var addressRow: some View {
         HStack(spacing: 8) {
             if event.network == "eth" {
-                // Так адрес выглядит в Etherscan и MetaMask; у находок по аватарке — крупнее.
-                BlockieView(address: event.address, size: event.matched.contains("_avatar") ? 44 : 26)
-                    .help("blockies")
+                // Так адрес выглядит в Etherscan и MetaMask; иконка, ради которой искали, — крупнее.
+                AddressIcons(address: event.address, size: 24,
+                             emphasizeJazzicon: isJazziconFind,
+                             emphasizeBlockie: event.matched.contains("_avatar"))
             }
             HighlightedAddress(address: event.address, highlights: highlightRanges, accent: accent, size: 15)
                 .textSelection(.enabled)
@@ -413,6 +419,7 @@ struct FoundCardView: View {
         case "trx": return URL(string: "https://tronscan.org/#/address/\(address)")
         case "sol": return URL(string: "https://solscan.io/account/\(address)")
         case "ton", "tonsub": return URL(string: "https://tonviewer.com/\(address)")
+        case "btc", "btc1": return URL(string: "https://mempool.space/address/\(address)")
         default: return nil
         }
     }
@@ -465,6 +472,7 @@ struct FoundCardView: View {
 
         var words = event.foundWords.map { $0.lowercased() }
         if let bycatch = event.bycatch { words.append(bycatch.text.lowercased()) }
+        if isJazziconFind, let prefix = session.jazziconPrefix { words.append(prefix) }
         if event.matched.contains("deadprefixsuffix") { words.append("dead") }
         if event.matched.contains(SessionViewModel.customPresetKey) {
             let pattern = session.customPatternText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

@@ -36,6 +36,9 @@ def parse_public_key(raw: str) -> coincurve.PublicKey:
 
 
 def address_for(network: str, point: coincurve.PublicKey) -> str:
+    if network in ("btc", "btc1"):
+        import btc
+        return btc.address(network, point.format(compressed=True))
     raw = keccak.new(digest_bits=256, data=point.format(compressed=False)[1:]).digest()[12:]
     if network == "eth":
         return "0x" + raw.hex()

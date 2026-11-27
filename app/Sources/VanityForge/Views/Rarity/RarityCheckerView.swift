@@ -130,6 +130,7 @@ struct RarityCheckerView: View {
     private func speed(for network: String) -> Double {
         switch network {
         case "eth", "trx": return session.lastMeasuredGPUSpeed ?? 90_000_000
+        case "btc", "btc1": return 65_000_000  // hash160 на GPU: ~2/3 скорости EVM
         case "sol": return 70_000
         default: return 120
         }
@@ -186,7 +187,10 @@ struct RarityShareCard: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 16) {
                 if report.network == "eth" {
-                    BlockieView(address: report.address, size: 72, cornerRadius: 14)
+                    VStack(spacing: 6) {
+                        BlockieView(address: report.address, size: 58, cornerRadius: 12)
+                        if let jazz = JazziconView(address: report.address, size: 30) { jazz }
+                    }
                 } else {
                     NetworkIcon(key: report.network, size: 56)
                         .frame(width: 72, height: 72)

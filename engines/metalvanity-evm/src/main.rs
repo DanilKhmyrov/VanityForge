@@ -16,6 +16,10 @@
 //!   metalvanity-evm --target dead:beef [--target :0000 ...] [--prefix dead] [--suffix beef]
 //!                   [--tron-target TXyz:abc ...] [--split-key <публичный ключ заказчика>]
 //!                   [--avatar <описание blockies>] [--bycatch-run R] [--bycatch-word hex ...]
+//!                   [--btc-target 1Abc:xyz | *abc | ?abc ...] [--bech32-target abc: | :xyz | *abc ...]
+//!
+//! Bitcoin — сжатый ключ: 1… (P2PKH, цели как у TRON, найденный адрес — сеть btc1)
+//! и bc1q… (P2WPKH, символы после «bc1q», сеть btc). Ключ в выводе — hex.
 //!                   [--threads N] [--batch B] [--reseed-secs S]
 //!                   [--gpu-load 1..100] [--max-speed адресов/с]
 //!
@@ -215,9 +219,13 @@ fn top21_words(n: &[u8; 25]) -> [u32; 6] {
     w
 }
 
+#[derive(Clone)]
 struct TronTarget {
     prefix: String,
     suffix: String,
+    /// Длина адреса, под которую строится диапазон начала: у TRON всегда 34,
+    /// у Bitcoin 1… — 34 или (реже) 33, поэтому там цель уходит на GPU дважды.
+    len: usize,
 }
 
 impl TronTarget {
@@ -230,7 +238,7 @@ impl TronTarget {
         if prefix.len() > TRON_LEN || suffix.len() > MAX_TRON_SUFFIX {
             fail("tron target too long (prefix ≤ 34, suffix ≤ 10)");
         }
-        TronTarget { prefix: prefix.to_string(), suffix: suffix.to_string() }
+        TronTarget { prefix: prefix.to_string(), suffix: suffix.to_string(), len: TRON_LEN }
     }
 
     fn matches(&self, address: &str) -> bool {
@@ -242,7 +250,7 @@ impl TronTarget {
         let mut w = [0u32; 20];
         if !self.prefix.is_empty() {
             w[0] |= 1;
-            let fill = TRON_LEN - self.prefix.len();
+            let fill = self.len.saturating_sub(self.prefix.len());
             let lo = b58_value(&(self.prefix.clone() + &"1".repeat(fill)));
             let hi = b58_value(&(self.prefix.clone() + &"z".repeat(fill)));
             // Верх, не влезший в 25 байт, — до максимума; низ — цель невозможна.
@@ -511,15 +519,165 @@ impl Avatar {
     }
 }
 
-/// Цели сверх шаблонов адреса: улов и аватарка.
+// ---- Bitcoin: hash160 сжатого ключа; 1… — Base58Check (версия 0x00), bc1q… — bech32 ----
+
+fn hash160(pk: &PublicKey) -> [u8; 20] {
+    use ripemd::{Digest as _, Ripemd160};
+    let sha = Sha256::digest(pk.serialize());
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&Ripemd160::digest(sha));
+    out
+}
+
+fn btc_legacy_address(h160: &[u8; 20]) -> String {
+    let mut payload = vec![0x00u8];
+    payload.extend_from_slice(h160);
+    let checksum = Sha256::digest(Sha256::digest(&payload));
+    payload.extend_from_slice(&checksum[..4]);
+    b58_encode(&payload)
+}
+
+const BECH32: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+fn bech32_polymod(values: &[u8]) -> u32 {
+    const GEN: [u32; 5] = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let mut chk = 1u32;
+    for &v in values {
+        let top = chk >> 25;
+        chk = ((chk & 0x1ffffff) << 5) ^ v as u32;
+        for (i, g) in GEN.iter().enumerate() {
+            if (top >> i) & 1 == 1 {
+                chk ^= g;
+            }
+        }
+    }
+    chk
+}
+
+/// P2WPKH: bc1q + 32 символа hash160 по 5 бит + 6 символов контрольной суммы (BIP-173).
+fn btc_bech32_address(h160: &[u8; 20]) -> String {
+    let mut data = vec![0u8];
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for &b in h160 {
+        acc = (acc << 8) | b as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            data.push(((acc >> bits) & 31) as u8);
+        }
+    }
+    let mut values = vec![3u8, 3, 0, 2, 3];
+    values.extend(&data);
+    values.extend([0u8; 6]);
+    let pm = bech32_polymod(&values) ^ 1;
+    data.extend((0..6).map(|i| ((pm >> (5 * (5 - i))) & 31) as u8));
+    format!("bc1{}", data.iter().map(|&d| BECH32[d as usize] as char).collect::<String>())
+}
+
+/// Цель для bc1q…: символы после «bc1q» — в начале, в конце или где угодно.
+struct Bech32Target {
+    mode: u32, // 0 — начало, 1 — конец, 2 — где угодно
+    symbols: Vec<u8>,
+}
+
+const BECH32_BODY: usize = 38;
+
+impl Bech32Target {
+    fn parse(raw: &str) -> Bech32Target {
+        let raw = raw.to_lowercase();
+        let (mode, text) = if let Some(rest) = raw.strip_prefix('*') {
+            (2, rest.to_string())
+        } else {
+            match raw.split_once(':') {
+                Some((pre, "")) => (0, pre.to_string()),
+                Some(("", suf)) => (1, suf.to_string()),
+                None => (0, raw.clone()),
+                _ => fail("bech32 target: prefix: or :suffix or *substring, not both"),
+            }
+        };
+        let symbols: Option<Vec<u8>> =
+            text.chars().map(|c| BECH32.iter().position(|&b| b as char == c).map(|p| p as u8)).collect();
+        match symbols {
+            Some(s) if !s.is_empty() && s.len() <= if mode == 0 { 32 } else { BECH32_BODY } => Bech32Target { mode, symbols: s },
+            _ => fail("bech32 target: characters of qpzry9x8gf2tvdw0s3jn54khce6mua7l, prefix ≤ 32, others ≤ 38"),
+        }
+    }
+
+    fn words(&self) -> [u32; 11] {
+        let mut w = [0u32; 11];
+        w[0] = self.mode | (self.symbols.len() as u32) << 8;
+        for (j, &s) in self.symbols.iter().enumerate() {
+            w[1 + j / 4] |= (s as u32) << (8 * (j % 4));
+        }
+        w
+    }
+
+    fn matches(&self, address: &str) -> bool {
+        let body = &address[4..];
+        let needle: String = self.symbols.iter().map(|&s| BECH32[s as usize] as char).collect();
+        match self.mode {
+            0 => body.starts_with(&needle),
+            1 => body.ends_with(&needle),
+            _ => body.contains(&needle),
+        }
+    }
+}
+
+/// Цели Bitcoin: 1… — те же цели и «содержит», что у TRON (Base58Check, только
+/// версия 0x00 и hash160 вместо адреса EVM), bc1q… — Bech32Target.
+struct Btc {
+    legacy: Vec<TronTarget>,
+    legacy_contains: Contains,
+    bech32: Vec<Bech32Target>,
+}
+
+impl Btc {
+    fn none() -> Btc {
+        Btc { legacy: Vec::new(), legacy_contains: Contains::none(), bech32: Vec::new() }
+    }
+
+    fn active(&self) -> bool {
+        !self.legacy.is_empty() || !self.legacy_contains.tron_section().is_empty() || !self.bech32.is_empty()
+    }
+
+    fn words(&self) -> Vec<u32> {
+        let short: Vec<TronTarget> = self
+            .legacy
+            .iter()
+            .filter(|t| !t.prefix.is_empty() && t.prefix.len() <= TRON_LEN - 1)
+            .map(|t| TronTarget { len: TRON_LEN - 1, ..t.clone() })
+            .collect();
+        let mut out = vec![(self.legacy.len() + short.len()) as u32];
+        for target in self.legacy.iter().chain(&short) {
+            out.extend(target.words());
+        }
+        out.extend(Contains::words(&self.legacy_contains.tron_section(), 10));
+        out.push(self.bech32.len() as u32);
+        for target in &self.bech32 {
+            out.extend(target.words());
+        }
+        out
+    }
+
+    fn legacy_matches(&self, address: &str) -> bool {
+        self.legacy.iter().any(|t| t.matches(address)) || self.legacy_contains.tron_matches(address)
+    }
+
+    fn bech32_matches(&self, address: &str) -> bool {
+        self.bech32.iter().any(|t| t.matches(address))
+    }
+}
+
+/// Цели сверх шаблонов адреса: улов, аватарка и Bitcoin.
 struct Extra {
     bycatch: Bycatch,
     avatar: Option<Avatar>,
+    btc: Btc,
 }
 
 impl Extra {
     fn none() -> Extra {
-        Extra { bycatch: Bycatch::none(), avatar: None }
+        Extra { bycatch: Bycatch::none(), avatar: None, btc: Btc::none() }
     }
 }
 
@@ -528,7 +686,7 @@ struct Hit {
     run: u64,
     j: u32, // смещение в окне 0..2B
     address: [u8; 20],
-    network: u32, // 0 — EVM, 1 — TRON, 2 — побочный улов, 3 — аватарка
+    network: u32, // 0 — EVM, 1 — TRON, 2 — побочный улов, 3 — аватарка, 4 — Bitcoin 1…, 5 — bc1q… (адрес — hash160)
 }
 
 struct Gpu {
@@ -583,6 +741,7 @@ impl Gpu {
         cfg.extend(Contains::words(&contains.tron_section(), 10));
         cfg.extend(extra.bycatch.words());
         cfg.extend(Avatar::words(extra.avatar.as_ref()));
+        cfg.extend(extra.btc.words());
 
         let slots = (0..2)
             .map(|_| (device.new_buffer(4, shared), device.new_buffer(capacity as u64 * 32, shared)))
@@ -686,7 +845,24 @@ fn verify(
     extra: &Extra,
 ) -> Option<(SecretKey, String)> {
     let key = keys.key(hit);
-    let address = eth_address(&keys.public(secp, &key));
+    let public = keys.public(secp, &key);
+    if hit.network == 4 || hit.network == 5 {
+        let h160 = hash160(&public);
+        if h160 != hit.address {
+            fail(&format!("GPU hash160 mismatch: thread {} run {} j {}", hit.thread, hit.run, hit.j));
+        }
+        if hit.network == 4 {
+            // Начало 1… на GPU — диапазон чуть шире точного условия: «почти» отсеиваем тихо.
+            let text = btc_legacy_address(&h160);
+            return extra.btc.legacy_matches(&text).then_some((key, text));
+        }
+        let text = btc_bech32_address(&h160);
+        if !extra.btc.bech32_matches(&text) {
+            fail(&format!("GPU bech32 mismatch: thread {} run {} j {}", hit.thread, hit.run, hit.j));
+        }
+        return Some((key, text));
+    }
+    let address = eth_address(&public);
     if address != hit.address {
         fail(&format!("GPU result mismatch: thread {} run {} j {}", hit.thread, hit.run, hit.j));
     }
@@ -742,17 +918,25 @@ fn self_test() -> ! {
     // TRON и «содержит»: GPU должен найти ровно то, что находит CPU перебором
     // всех кандидатов.
     let tron = [TronTarget::parse("TX:"), TronTarget::parse(":a"), TronTarget::parse("TR:z")];
-    let avatar = |spec: &str| Extra { bycatch: Bycatch::none(), avatar: Some(Avatar::parse(spec)) };
-    let cases: [(&str, &[TronTarget], Contains, Extra); 8] = [
+    let avatar = |spec: &str| Extra { avatar: Some(Avatar::parse(spec)), ..Extra::none() };
+    let btc = |btc: Btc| Extra { btc, ..Extra::none() };
+    let cases: [(&str, &[TronTarget], Contains, Extra); 11] = [
         ("tron", &tron, Contains::none(), Extra::none()),
         ("tron contains", &[], Contains { tron: vec![Contains::parse_tron("abc"), Contains::parse_tron("Zz")], ..Contains::none() }, Extra::none()),
         ("tron contains, any case", &[], Contains { tron_folded: vec![Contains::parse_tron_folded("aBc"), Contains::parse_tron_folded("tr")], ..Contains::none() }, Extra::none()),
         ("evm contains", &[], Contains { eth: vec![Contains::parse_eth("abc"), Contains::parse_eth("0f0")], ..Contains::none() }, Extra::none()),
-        ("bycatch runs", &[], Contains::none(), Extra { bycatch: Bycatch { run: 3, words: Vec::new() }, avatar: None }),
+        ("bycatch runs", &[], Contains::none(), Extra { bycatch: Bycatch { run: 3, words: Vec::new() }, ..Extra::none() }),
         // Слова подставляются ниже — из адресов настоящих кандидатов этого прогона.
         ("bycatch words", &[], Contains::none(), Extra::none()),
         ("avatar cells", &[], Contains::none(), avatar("cells=cs.b............................;miss=1")),
         ("avatar colors", &[], Contains::none(), avatar("color=300-60/0-200;bg=0-359/0-60;cells=..s.............................")),
+        ("btc legacy", &[], Contains::none(), btc(Btc {
+            legacy: vec![TronTarget::parse("1A:"), TronTarget::parse(":z"), TronTarget::parse("1Bc:x")], ..Btc::none() })),
+        ("btc legacy contains", &[], Contains::none(), btc(Btc {
+            legacy_contains: Contains { tron: vec![Contains::parse_tron("abc")], tron_folded: vec![Contains::parse_tron_folded("Xy")], ..Contains::none() },
+            ..Btc::none() })),
+        ("btc bech32", &[], Contains::none(), btc(Btc {
+            bech32: vec![Bech32Target::parse("qq:"), Bech32Target::parse(":7l"), Bech32Target::parse("*xyz")], ..Btc::none() })),
     ];
     for (name, tron, contains, extra) in cases.iter() {
         let keys = Keys::random(threads, batch, None);
@@ -792,6 +976,17 @@ fn self_test() -> ! {
                     }
                     if extra.avatar.as_ref().is_some_and(|a| a.matches(&raw)) {
                         expected.push(format!("0x{}", to_hex(&raw)));
+                    }
+                    if extra.btc.active() {
+                        let h160 = hash160(&keys.public(&secp, &keys.key(&hit)));
+                        let legacy = btc_legacy_address(&h160);
+                        if extra.btc.legacy_matches(&legacy) {
+                            expected.push(legacy);
+                        }
+                        let segwit = btc_bech32_address(&h160);
+                        if extra.btc.bech32_matches(&segwit) {
+                            expected.push(segwit);
+                        }
                     }
                 }
             }
@@ -856,18 +1051,38 @@ fn main() {
         .filter(|w| w[0] == "--bycatch-word")
         .map(|w| Bycatch::parse_word(&w[1].to_lowercase()))
         .collect();
+    let mut btc = Btc::none();
+    for w in args.windows(2) {
+        if w[0] == "--btc-target" {
+            if let Some(needle) = w[1].strip_prefix('*') {
+                btc.legacy_contains.tron.push(Contains::parse_tron(needle));
+            } else if let Some(needle) = w[1].strip_prefix('?') {
+                btc.legacy_contains.tron_folded.push(Contains::parse_tron_folded(needle));
+            } else {
+                btc.legacy.push(TronTarget::parse(&w[1]));
+            }
+        } else if w[0] == "--bech32-target" {
+            btc.bech32.push(Bech32Target::parse(&w[1]));
+        }
+    }
     let extra = Extra {
         bycatch: Bycatch {
             run: value_of("--bycatch-run").and_then(|v| v.parse().ok()).unwrap_or(0u32).min(MAX_RUN),
             words: bycatch_words,
         },
         avatar: value_of("--avatar").map(|spec| Avatar::parse(&spec)),
+        btc,
     };
     if extra.bycatch.words.len() > 4 * MAX_PATTERNS {
         fail("too many bycatch words");
     }
+    if extra.btc.legacy.len() > MAX_PATTERNS || extra.btc.bech32.len() > MAX_PATTERNS
+        || extra.btc.legacy_contains.tron_section().len() > MAX_PATTERNS
+    {
+        fail("too many bitcoin targets");
+    }
     if patterns.is_empty() && tron.is_empty() && contains.eth.is_empty() && contains.tron_section().is_empty()
-        && extra.avatar.is_none()
+        && extra.avatar.is_none() && !extra.btc.active()
     {
         eprintln!("usage: metalvanity-evm --target <prefix>:<suffix> [--tron-target <prefix>:<suffix>] [...]");
         std::process::exit(1);
@@ -904,7 +1119,12 @@ fn main() {
     let report = |hits: Vec<Hit>, keys: &Keys| {
         for hit in hits {
             if let Some((key, address)) = verify(&secp, keys, &hit, &patterns, &tron, &contains, &extra) {
-                let network = if hit.network == 1 { "trx" } else { "eth" };
+                let network = match hit.network {
+                    1 => "trx",
+                    4 => "btc1",
+                    5 => "btc",
+                    _ => "eth",
+                };
                 let kind = match hit.network {
                     2 => ",\"bycatch\":true",
                     3 => ",\"avatar\":true",

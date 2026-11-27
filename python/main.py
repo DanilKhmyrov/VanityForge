@@ -183,17 +183,20 @@ def generate_vanity(networks: List[str], preset_key: str = "all"):
     gpu_path = bridge.find_gpu_eth()
     gpu_eth = bridge.eth_hex_targets(preset_key, None, allow_contains=True) if "eth" in networks and gpu_path else None
     gpu_trx = bridge.tron_targets(preset_key, None) if "trx" in networks and gpu_path else None
+    gpu_btc = bridge.bech32_targets(preset_key, None) if "btc" in networks and gpu_path else None
+    gpu_btc1 = bridge.tron_targets(preset_key, None, lead="1") if "btc1" in networks and gpu_path else None
+    gpu_all = (("eth", gpu_eth), ("trx", gpu_trx), ("btc", gpu_btc), ("btc1", gpu_btc1))
     ethvanity_path = bridge.find_ethvanity() if "eth" in networks and not gpu_eth else None
     eth_targets = bridge.eth_hex_targets(preset_key, None) if ethvanity_path else None
-    accelerated = {n for n, t in (("eth", gpu_eth), ("trx", gpu_trx)) if t} | ({"eth"} if eth_targets else set())
+    accelerated = {n for n, t in gpu_all if t} | ({"eth"} if eth_targets else set())
     cpu_nets = [n for n in networks if n not in accelerated]
 
     desc, _ = PRESETS[preset_key]
     print(f"  Условие: {desc}")
     print(f"  Сети: {', '.join(NETWORKS[n].name() for n in networks)}")
     print(f"  CPU: {os.cpu_count()} ядер")
-    if gpu_eth or gpu_trx:
-        print(f"  Видеокарта: {', '.join(n for n, t in (('eth', gpu_eth), ('trx', gpu_trx)) if t)}")
+    if any(t for _, t in gpu_all):
+        print(f"  Видеокарта: {', '.join(n for n, t in gpu_all if t)}")
     if eth_targets:
         print("  ETH: ethvanity (CPU)")
 
@@ -205,9 +208,10 @@ def generate_vanity(networks: List[str], preset_key: str = "all"):
 
     procs = []
 
-    if gpu_eth or gpu_trx:
+    if any(t for _, t in gpu_all):
         t = threading.Thread(target=bridge.metal_eth_worker, daemon=True,
-                             args=(gpu_path, gpu_eth, gpu_trx, preset_key, result_queue, stats_counter, stop_event))
+                             args=(gpu_path, gpu_eth, gpu_trx, preset_key, result_queue, stats_counter, stop_event),
+                             kwargs={"btc_targets": gpu_btc, "btc1_targets": gpu_btc1})
         t.start()
         procs.append(t)
     if eth_targets:
@@ -294,6 +298,8 @@ def main():
         print("  ton     - TON")
         print("  eth     - EVM: ETH, BSC, Polygon и т.п.")
         print("  trx     - Tron")
+        print("  btc     - Bitcoin SegWit (bc1q…)")
+        print("  btc1    - Bitcoin Legacy (1…)")
         print("  all     - Все сети")
         print()
         print("Условия:")
